@@ -33,6 +33,7 @@ describe('cli', () => {
     const help = await capture(['--help']);
     expect(help.code).toBe(0);
     expect(help.stdout).toContain('--barge-in');
+    expect(help.stdout).toContain('voice-callsim <ws-url>');
     expect(help.stdout).toContain('not affiliated with Twilio');
 
     const missing = await capture([]);
@@ -92,7 +93,7 @@ describe('cli', () => {
 
   it('runs the built bin', async () => {
     const { stdout } = await execFileAsync('node', ['dist/cli.js', '--version'], { cwd: process.cwd() });
-    expect(stdout).toContain('callsim 0.1.0');
+    expect(stdout).toContain('voice-callsim 0.1.0');
   });
 });
 
