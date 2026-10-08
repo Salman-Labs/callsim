@@ -57,7 +57,7 @@ export async function runCli(argv: string[], io: CliIo = defaultIo): Promise<num
       return 0;
     }
     if (args.version) {
-      io.stdout(`callsim ${packageVersion()}\n`);
+      io.stdout(`voice-callsim ${packageVersion()}\n`);
       return 0;
     }
     if (!args.url) throw new CliError('Missing WebSocket URL.\n\n' + helpText());
@@ -273,9 +273,10 @@ function useColor(io: CliIo, json: boolean): boolean {
 }
 
 function helpText(): string {
-  return `callsim ${packageVersion()} — test a Twilio Media Streams voice bot without placing a call
+  return `callsim (npm: voice-callsim) ${packageVersion()} — test a Twilio Media Streams voice bot without placing a call
 
 Usage:
+  voice-callsim <ws-url> [options]
   callsim <ws-url> [options]
 
 Options:

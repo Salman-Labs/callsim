@@ -1,4 +1,4 @@
-# callsim
+# callsim (npm: voice-callsim)
 
 Test a Twilio Media Streams voice bot on your laptop and in CI. No phone number, no tunnel, no real call.
 
@@ -19,7 +19,7 @@ Putting an AI voice bot on a Twilio number (an OpenAI Realtime bridge, for examp
 Node 18 or newer. The package is ESM-only.
 
 ```bash
-npm install --save-dev callsim
+npm i -D voice-callsim
 ```
 
 From a clone of this repo:
@@ -48,11 +48,16 @@ node dist/cli.js ws://127.0.0.1:8080 --say hello --barge-in 0.2 --out call.wav \
 
 The same command against `npm run example:buggy` (port 8081) exits 1. That bot answers late, sends audio in bursts, and ignores barge-in.
 
+Installed from npm, the same flags are `npx voice-callsim ws://127.0.0.1:8080 ...`. The `callsim` command is the same binary.
+
 `http://` and `https://` URLs are rewritten to `ws://` and `wss://`.
 
 ## CLI
 
+The npm package is `voice-callsim`. Both `voice-callsim` and `callsim` run the same CLI.
+
 ```text
+voice-callsim <ws-url> [options]
 callsim <ws-url> [options]
 ```
 
@@ -140,7 +145,7 @@ Any other `--say` text is rendered with the same synthesizer at runtime. It is a
 For something a person would recognize, pass your own file:
 
 ```bash
-callsim ws://127.0.0.1:8080 --audio ./caller.wav --out ./call.wav
+npx voice-callsim ws://127.0.0.1:8080 --audio ./caller.wav --out ./call.wav
 ```
 
 8 kHz mono μ-law or PCM is used as-is. Stereo is mixed to mono. Other sample rates are resampled to 8 kHz. The file must be a WAV (PCM 8-bit, PCM 16-bit, or μ-law).
@@ -151,7 +156,7 @@ callsim ws://127.0.0.1:8080 --audio ./caller.wav --out ./call.wav
 
 ```ts
 import { expect, it } from 'vitest';
-import { simulateCall } from 'callsim';
+import { simulateCall } from 'voice-callsim';
 
 it('answers quickly and clears on barge-in', async () => {
   const report = await simulateCall({
@@ -197,7 +202,7 @@ jobs:
         run: node dist/server.js &
       - name: Media stream regression
         run: >
-          npx --yes callsim@0.1.0 ws://127.0.0.1:8080
+          npx --yes voice-callsim@0.1.0 ws://127.0.0.1:8080
           --say hello --barge-in 0.2 --ci
           --max-first-audio-ms 800
           --max-gap-ms 60
