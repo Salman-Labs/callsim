@@ -1,0 +1,70 @@
+{
+  "name": "callsim",
+  "version": "0.1.0",
+  "description": "Test Twilio Media Streams voice bots locally and in CI, with no phone number, tunnel, or real call.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Salman Labs",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "callsim": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "fixtures",
+    "LICENSE",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Salman-Labs/callsim.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Salman-Labs/callsim/issues"
+  },
+  "homepage": "https://github.com/Salman-Labs/callsim#readme",
+  "keywords": [
+    "twilio",
+    "media-streams",
+    "voice-ai",
+    "voice-agent",
+    "realtime",
+    "testing",
+    "ci",
+    "websocket",
+    "telephony"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "generate:fixtures": "tsx scripts/generate-fixtures.ts",
+    "example:good": "tsx examples/good-bot.ts",
+    "example:buggy": "tsx examples/buggy-bot.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.68",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
