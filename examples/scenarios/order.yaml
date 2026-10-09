@@ -1,0 +1,37 @@
+name: LiveKit scripted caller
+transport: livekit
+livekit:
+  url: ${LIVEKIT_URL}
+  caller:
+    kind: sip
+    attributes:
+      sip.phoneNumber: "+15550001111"
+      sip.trunkPhoneNumber: "+15557770000"
+voice:
+  phone_band: true
+defaults:
+  max_first_audio_ms: 2000
+  silence_ms: 150
+scenarios:
+  - label: Pickup order
+    tags:
+      feature: ordering
+    userdata:
+      restaurant_id: test-pizzeria
+    turns:
+      - expect:
+          agent_says_any: ["thanks for calling", "what can I get"]
+      - audio: ../../fixtures/hello.wav
+        expect:
+          agent_heard: ["hello"]
+          agent_says_any: ["anything else"]
+      - audio: ../../fixtures/yes.wav
+        barge_in_after_ms: 350
+        expect:
+          max_yield_ms: 600
+          max_agent_audio_after_barge_ms: 700
+          agent_says_any: ["margherita", "updated"]
+          agent_heard: ["yes"]
+      - dtmf: "1"
+        expect:
+          agent_says_any: ["confirmed"]

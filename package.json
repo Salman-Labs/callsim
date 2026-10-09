@@ -1,7 +1,7 @@
 {
   "name": "voice-callsim",
-  "version": "0.1.0",
-  "description": "Test Twilio Media Streams voice bots locally and in CI, with no phone number, tunnel, or real call.",
+  "version": "0.2.0-dev.0",
+  "description": "Scripted caller tests for voice agents on Twilio Media Streams and LiveKit, locally and in CI.",
   "type": "module",
   "license": "MIT",
   "author": "Salman Labs",
@@ -44,7 +44,11 @@
     "testing",
     "ci",
     "websocket",
-    "telephony"
+    "telephony",
+    "livekit",
+    "barge-in",
+    "dtmf",
+    "scenarios"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -54,14 +58,31 @@
     "generate:fixtures": "tsx scripts/generate-fixtures.ts",
     "example:good": "tsx examples/good-bot.ts",
     "example:buggy": "tsx examples/buggy-bot.ts",
+    "example:livekit-good": "tsx examples/livekit-agent.ts",
+    "example:livekit-buggy": "tsx examples/livekit-agent.ts --buggy",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "yaml": "^2.9.1"
+  },
+  "peerDependencies": {
+    "@livekit/rtc-node": "^1.1.0",
+    "livekit-server-sdk": "^2.19.1"
+  },
+  "peerDependenciesMeta": {
+    "@livekit/rtc-node": {
+      "optional": true
+    },
+    "livekit-server-sdk": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@livekit/rtc-node": "^1.1.0",
     "@types/node": "^18.19.68",
     "@types/ws": "^8.18.1",
+    "livekit-server-sdk": "^2.19.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"

@@ -1,5 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
+const skipLiveKit = process.env.CALLSIM_SKIP_LIVEKIT === '1';
+
 export default defineConfig({
   test: {
     environment: 'node',
@@ -9,5 +11,11 @@ export default defineConfig({
     sequence: {
       concurrent: false,
     },
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/.git/**',
+      ...(skipLiveKit ? ['test/livekit-run.test.ts'] : []),
+    ],
   },
 });
