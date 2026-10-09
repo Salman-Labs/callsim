@@ -27,3 +27,28 @@ export function interpolateString(value: string, where: string): string {
     return found;
   });
 }
+
+/** Names referenced as `${VAR}`. Values are never read. */
+export function referencedEnvNames(value: unknown): string[] {
+  const names = new Set<string>();
+  collectEnvNames(value, names);
+  return [...names].sort();
+}
+
+export function missingEnvNames(value: unknown): string[] {
+  return referencedEnvNames(value).filter((name) => process.env[name] === undefined);
+}
+
+function collectEnvNames(value: unknown, names: Set<string>): void {
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(PATTERN)) names.add(match[1]!);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectEnvNames(item, names);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) collectEnvNames(item, names);
+  }
+}

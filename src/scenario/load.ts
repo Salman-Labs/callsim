@@ -37,6 +37,11 @@ export function loadScenarioFile(path: string): ScenarioFile {
     throw new ScenarioUsageError(`${path} must be a YAML mapping`);
   }
   const data = interpolateEnv(parsed as Record<string, unknown>, path);
+  return loadScenarioDocument(data, path);
+}
+
+/** Validate an already-parsed scenario document. `path` is used only in error text. */
+export function loadScenarioDocument(data: Record<string, unknown>, path: string): ScenarioFile {
   const transport = requiredString(data.transport, `${path} transport`);
   const scenarios = data.scenarios;
   if (!Array.isArray(scenarios) || scenarios.length === 0) {

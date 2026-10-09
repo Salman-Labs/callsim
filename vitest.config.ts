@@ -15,7 +15,7 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       '**/.git/**',
-      ...(skipLiveKit ? ['test/livekit-run.test.ts'] : []),
+      ...(skipLiveKit ? ['test/livekit-run.test.ts', 'test/mcp-livekit.test.ts'] : []),
     ],
   },
 });

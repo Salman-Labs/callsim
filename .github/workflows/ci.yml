@@ -53,4 +53,4 @@ jobs:
       - name: Build
         run: npm run build
       - name: LiveKit dev server scenarios
-        run: npx vitest run test/livekit-run.test.ts
+        run: npx vitest run test/livekit-run.test.ts test/mcp-livekit.test.ts

@@ -52,6 +52,14 @@ const defaultIo: CliIo = {
 
 export async function runCli(argv: string[], io: CliIo = defaultIo): Promise<number> {
   if (argv[0] === 'run') return runScenariosCommand(argv.slice(1), io);
+  if (argv[0] === 'mcp') {
+    const { runMcpCommand } = await import('./cli-mcp.js');
+    return runMcpCommand(argv.slice(1), io);
+  }
+  if (argv[0] === 'validate') {
+    const { runValidateCommand } = await import('./cli-validate.js');
+    return runValidateCommand(argv.slice(1), io);
+  }
   try {
     const args = parseArgs(argv);
     if (args.help) {
@@ -281,6 +289,8 @@ Usage:
   voice-callsim <ws-url> [options]
   callsim <ws-url> [options]
   callsim run <files/globs> [--json] [--ci] [--junit out.xml]
+  callsim validate <file>
+  callsim mcp
 
 Options:
   --say <text>              Caller turn. Repeatable, in order. Bundled fixtures:
