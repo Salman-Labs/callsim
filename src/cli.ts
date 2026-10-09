@@ -12,6 +12,7 @@ import { formatReport } from './report.js';
 import { SimulateCallError, simulateCall } from './simulate.js';
 import { reportJson } from './thresholds.js';
 import type { Thresholds, TurnInput } from './types.js';
+import { runScenariosCommand } from './cli-run.js';
 import { packageVersion } from './version.js';
 
 interface CliIo {
@@ -50,6 +51,7 @@ const defaultIo: CliIo = {
 };
 
 export async function runCli(argv: string[], io: CliIo = defaultIo): Promise<number> {
+  if (argv[0] === 'run') return runScenariosCommand(argv.slice(1), io);
   try {
     const args = parseArgs(argv);
     if (args.help) {
@@ -278,6 +280,7 @@ function helpText(): string {
 Usage:
   voice-callsim <ws-url> [options]
   callsim <ws-url> [options]
+  callsim run <files/globs> [--json] [--ci] [--junit out.xml]
 
 Options:
   --say <text>              Caller turn. Repeatable, in order. Bundled fixtures:
@@ -303,7 +306,9 @@ Options:
   --version
   --help
 
-callsim is not affiliated with Twilio.
+\`callsim run --help\` prints the scenario runner.
+
+callsim is not affiliated with Twilio or LiveKit.
 `;
 }
 
