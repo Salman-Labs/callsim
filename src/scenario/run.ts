@@ -4,10 +4,13 @@ import { join, relative } from 'node:path';
 import type { WriteStream } from 'node:fs';
 import { optionalPackageVersion } from '../livekit/load.js';
 import { createLiveKitTransport } from '../livekit/transport.js';
+import { transcribePcm } from '../stt/transcribe.js';
+import { createTwilioTransport } from '../twilio/transport.js';
 import { StereoRecording } from '../recording.js';
 import type {
   AgentAudioFrame,
   AgentVadEvent,
+  CallerPlayout,
   TranscriptEvent,
   Transport,
   TransportLogEvent,
@@ -29,6 +32,7 @@ import type {
   ScenarioFile,
   ScenarioReport,
   ScenarioTurn,
+  SttConfig,
 } from './types.js';
 import { runVerify } from './verify.js';
 
@@ -161,7 +165,7 @@ async function runConnected(args: ConnectedArgs): Promise<ScenarioReport> {
     speech.noteFrame(frame);
   });
 
-  const config = file.transport === 'livekit' ? ({ ...(file.livekit ?? {}) } as Record<string, unknown>) : {};
+  const config = transportConfig(file);
   await transport.connect({
     runId: args.base.runId,
     label: scenario.label,
@@ -185,6 +189,7 @@ async function runConnected(args: ConnectedArgs): Promise<ScenarioReport> {
 
   const turns: ReportTurn[] = [];
   const failures: string[] = [];
+  const runnerWarnings: string[] = [];
   const bargeIn: ReportBargeIn[] = [];
   const dtmf: ReportDtmf[] = [];
   const transcript: ReportTranscriptLine[] = [];
@@ -206,9 +211,12 @@ async function runConnected(args: ConnectedArgs): Promise<ScenarioReport> {
       recording,
       signal,
       log,
+      stt: file.stt,
+      nativeTranscript: transport.hasNativeTranscript(),
     });
     turns.push(outcome.turn);
     failures.push(...outcome.failures);
+    runnerWarnings.push(...outcome.warnings);
     if (outcome.barge) bargeIn.push(outcome.barge);
     if (outcome.dtmf) dtmf.push(outcome.dtmf);
     if (outcome.callerLine) transcript.push(outcome.callerLine);
@@ -233,6 +241,17 @@ async function runConnected(args: ConnectedArgs): Promise<ScenarioReport> {
     failures.push(...result.failures);
   }
 
+  const snapshot = transport.snapshot();
+  const gapLimit = tightestGap(file.defaults?.max_gap_ms, scenario.turns);
+  if (snapshot.twilio && gapLimit !== undefined && snapshot.twilio.underruns.longestGapMs > gapLimit) {
+    failures.push(
+      `longest playback gap ${snapshot.twilio.underruns.longestGapMs} ms exceeds ${gapLimit} ms (${snapshot.twilio.underruns.count} underruns)`,
+    );
+  }
+  if (snapshot.twilio && snapshot.twilio.formatProblemCount > 0) {
+    failures.push(`twilio format problems: ${snapshot.twilio.formatProblemCount}`);
+  }
+
   writeFileSync(args.wavPath, recording.toWav());
   const samples = turns.map((turn) => turn.agent.firstAudioMs).filter((value): value is number => value !== null);
   const rtcNode = file.transport === 'livekit' ? optionalPackageVersion('@livekit/rtc-node') : undefined;
@@ -243,7 +262,8 @@ async function runConnected(args: ConnectedArgs): Promise<ScenarioReport> {
     ...(caller ? { caller } : {}),
     ok: failures.length === 0,
     failures,
-    warnings: [...transport.warnings()],
+    warnings: [...transport.warnings(), ...runnerWarnings],
+    ...(snapshot.twilio ? { twilio: snapshot.twilio } : {}),
     turns,
     bargeIn,
     dtmf,
@@ -270,6 +290,8 @@ interface TurnContext {
   recording: StereoRecording;
   signal: AbortSignal;
   log: (event: TransportLogEvent) => void;
+  stt?: SttConfig;
+  nativeTranscript: boolean;
 }
 
 async function runTurn(ctx: TurnContext): Promise<{
@@ -278,12 +300,13 @@ async function runTurn(ctx: TurnContext): Promise<{
   barge?: ReportBargeIn;
   dtmf?: ReportDtmf;
   callerLine?: ReportTranscriptLine;
+  warnings: string[];
 }> {
   const n = ctx.index + 1;
   const { turn, transport, speech, signal } = ctx;
   const windowStart = ctx.index === 0 ? 0 : transport.now();
   const callerAction = Boolean(turn.say || turn.audio || turn.dtmf);
-  const expect = mergeExpectation(ctx.defaults, turn.expect, callerAction);
+  const expect = mergeExpectation(ctx.defaults, turn.expect, Boolean(turn.say || turn.audio));
   const silenceMs = turn.silence_ms ?? (ctx.index > 0 && turn.barge_in_after_ms === undefined ? (ctx.defaults?.silence_ms ?? 0) : 0);
 
   if (turn.hangup) await transport.hangup();
@@ -309,6 +332,7 @@ async function runTurn(ctx: TurnContext): Promise<{
   let caller: ReportTurn['caller'];
   let callerLine: ReportTranscriptLine | undefined;
   let bargeAt: number | undefined;
+  let clearInfo: CallerPlayout['barge'] | undefined;
   if (ctx.clip) {
     const playout = await transport.playCallerAudio({ pcm: ctx.clip.pcm, sampleRate: ctx.clip.sampleRate });
     ctx.recording.write(0, playout.startedAtMs, resampleLinear(ctx.clip.pcm, ctx.clip.sampleRate, 8000));
@@ -327,6 +351,7 @@ async function runTurn(ctx: TurnContext): Promise<{
       startedAt: playout.startedAtMs,
     });
     if (turn.barge_in_after_ms !== undefined) bargeAt = playout.startedAtMs;
+    clearInfo = playout.barge;
   }
 
   let dtmf: ReportDtmf | undefined;
@@ -351,9 +376,21 @@ async function runTurn(ctx: TurnContext): Promise<{
   if (expect?.agent_silent) {
     await sleep(Math.max(silenceMs, 800), signal);
   } else if (callerAction && expect && expectsSpeech(expect)) {
-    const reply = await waitForReply(speech, transport, afterMs, deferEnd, windowStart, signal);
+    const reply = await waitForReply(speech, transport, afterMs, deferEnd, windowStart, signal, ctx.nativeTranscript || Boolean(ctx.stt));
     firstAudioMs = reply.firstAudioMs;
     speechMs = reply.speechMs;
+  }
+
+  if (ctx.stt && !ctx.nativeTranscript) {
+    const agentAudio = speech.pcmBetween(windowStart, transport.now());
+    if (agentAudio && agentAudio.pcm.length > 0) {
+      const text = await transcribePcm(ctx.stt, agentAudio.pcm, agentAudio.sampleRate);
+      if (text) speech.said.push({ text, final: true, atMs: transport.now() });
+    }
+    if (ctx.clip && ctx.clip.pcm.length > 0) {
+      const text = await transcribePcm(ctx.stt, ctx.clip.pcm, ctx.clip.sampleRate);
+      if (text) speech.heard.push({ text, final: true, atMs: caller?.startedAt ?? windowStart });
+    }
   }
 
   const said = speech.text('said', windowStart, transport.now());
@@ -370,8 +407,13 @@ async function runTurn(ctx: TurnContext): Promise<{
         yieldMs,
         agentAudioAfterMs,
         newAudio,
+        transcript: ctx.nativeTranscript || ctx.stt ? 'available' : 'none',
+        clear:
+          turn.barge_in_after_ms !== undefined
+            ? { received: clearInfo?.clearReceived === true, msToClear: clearInfo?.msToClear ?? null }
+            : null,
       })
-    : { checks: [], failures: [] as string[] };
+    : { checks: [], failures: [] as string[], skipped: [] as string[] };
 
   const yieldChecks = evaluated.checks.filter((check) => check.type === 'max_yield_ms' || check.type === 'max_agent_audio_after_barge_ms');
   const barge: ReportBargeIn | undefined =
@@ -401,6 +443,7 @@ async function runTurn(ctx: TurnContext): Promise<{
     ...(barge ? { barge } : {}),
     ...(dtmf ? { dtmf } : {}),
     ...(callerLine ? { callerLine } : {}),
+    warnings: evaluated.skipped.map((type) => `turn ${n}: ${type} skipped (no transcript)`),
   };
 }
 
@@ -432,13 +475,16 @@ async function waitForReply(
   deferEnd: boolean,
   windowStart: number,
   signal: AbortSignal,
+  waitForWords: boolean,
 ): Promise<{ firstAudioMs: number | null; speechMs: number | null }> {
   const started = await waitUntil(() => speech.replyAfter(afterMs) !== null, REPLY_TIMEOUT_MS, signal);
   if (!started) return { firstAudioMs: null, speechMs: null };
-  await waitUntil(() => {
-    const now = transport.now();
-    return speech.text('said', windowStart, now).trim() !== '' || speech.text('heard', windowStart, now).trim() !== '';
-  }, 800, signal);
+  if (waitForWords) {
+    await waitUntil(() => {
+      const now = transport.now();
+      return speech.text('said', windowStart, now).trim() !== '' || speech.text('heard', windowStart, now).trim() !== '';
+    }, 800, signal);
+  }
   if (!deferEnd) await waitUntil(() => speech.replyAfter(afterMs)?.ended === true, REPLY_TIMEOUT_MS, signal);
   const reply = speech.replyAfter(afterMs);
   return {
@@ -454,7 +500,7 @@ class SpeechLog {
   speechStartedAtMs: number | null = null;
   said: TranscriptEvent[] = [];
   heard: TranscriptEvent[] = [];
-  private frames: { atMs: number; durationMs: number; loud: boolean }[] = [];
+  private frames: { atMs: number; durationMs: number; loud: boolean; pcm: Int16Array; sampleRate: number }[] = [];
 
   vad(event: AgentVadEvent): void {
     if (event.type === 'start') {
@@ -480,7 +526,28 @@ class SpeechLog {
       atMs: frame.atMs,
       durationMs: (frame.pcm.length / frame.sampleRate) * 1000,
       loud: peak >= ENERGY_VAD_PEAK,
+      pcm: frame.pcm,
+      sampleRate: frame.sampleRate,
     });
+  }
+
+  pcmBetween(from: number, to: number): { pcm: Int16Array; sampleRate: number } | null {
+    const chosen = this.frames.filter((frame) => frame.atMs < to && frame.atMs + frame.durationMs > from);
+    if (chosen.length === 0) return null;
+    const sampleRate = chosen[0]!.sampleRate;
+    let total = 0;
+    const parts = chosen.map((frame) => {
+      const pcm = frame.sampleRate === sampleRate ? frame.pcm : resampleLinear(frame.pcm, frame.sampleRate, sampleRate);
+      total += pcm.length;
+      return pcm;
+    });
+    const pcm = new Int16Array(total);
+    let offset = 0;
+    for (const part of parts) {
+      pcm.set(part, offset);
+      offset += part.length;
+    }
+    return { pcm, sampleRate };
   }
 
   startedAfter(ms: number): boolean {
@@ -557,12 +624,24 @@ function blankReport(file: ScenarioFile, scenario: ScenarioCase, runId: string, 
 
 function defaultTransport(name: string): Transport {
   if (name === 'livekit') return createLiveKitTransport();
-  if (name === 'twilio') {
-    throw new ScenarioUsageError(
-      'transport: twilio is not on the scenario runner yet. Use `callsim <ws-url>` for Twilio Media Streams.',
-    );
-  }
+  if (name === 'twilio') return createTwilioTransport();
   throw new ScenarioUsageError(`Unknown transport "${name}"`);
+}
+
+function transportConfig(file: ScenarioFile): Record<string, unknown> {
+  if (file.transport === 'livekit') return { ...(file.livekit ?? {}) } as Record<string, unknown>;
+  if (file.transport === 'twilio') return { ...(file.twilio ?? {}) } as Record<string, unknown>;
+  return {};
+}
+
+function tightestGap(fromDefaults: number | undefined, turns: ScenarioTurn[]): number | undefined {
+  let limit = fromDefaults;
+  for (const turn of turns) {
+    const value = turn.expect?.max_gap_ms;
+    if (value === undefined) continue;
+    limit = limit === undefined ? value : Math.min(limit, value);
+  }
+  return limit;
 }
 
 function matches(scenario: ScenarioCase, labels: string[] | undefined, tags: Record<string, string> | undefined): boolean {

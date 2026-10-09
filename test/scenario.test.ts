@@ -330,6 +330,14 @@ class ManualTransport implements Transport {
     return [];
   }
 
+  hasNativeTranscript(): boolean {
+    return true;
+  }
+
+  snapshot(): { twilio?: undefined } {
+    return {};
+  }
+
   async hangup(): Promise<void> {}
 
   emitSaid(text: string): void {

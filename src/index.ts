@@ -16,6 +16,8 @@ export type {
   TurnMetric,
   UnderrunMetric,
 } from './types.js';
+export { createTwilioTransport } from './twilio/transport.js';
+export { transcribePcm, missingWhisperMessage } from './stt/transcribe.js';
 export { createLiveKitTransport } from './livekit/transport.js';
 export { missingLiveKitMessage } from './livekit/load.js';
 export { resolveCallerKind, kindName } from './livekit/kind.js';

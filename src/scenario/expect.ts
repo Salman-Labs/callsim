@@ -13,29 +13,43 @@ export interface ExpectInput {
   agentAudioAfterMs: number | null;
   /** True when a new agent utterance started after this turn's caller audio. */
   newAudio: boolean;
+  /** `none` when this transport has no transcript and the scenario did not set `stt`. */
+  transcript?: 'available' | 'none';
+  /** Twilio `clear` observed while this caller clip overlapped agent audio. */
+  clear?: { received: boolean; msToClear: number | null } | null;
 }
 
-export function evaluateExpectations(input: ExpectInput): { checks: CheckResult[]; failures: string[] } {
+export function evaluateExpectations(input: ExpectInput): { checks: CheckResult[]; failures: string[]; skipped: string[] } {
   const checks: CheckResult[] = [];
   const failures: string[] = [];
+  const skipped: string[] = [];
   const { expect, turn } = input;
   const said = input.said;
   const heard = input.heard;
+  const noTranscript = input.transcript === 'none';
 
   if (expect.agent_says_any) {
+    if (noTranscript) skip(checks, skipped, 'agent_says_any');
+    else {
     const ok = expect.agent_says_any.some((phrase) => includes(said, phrase));
     const detail = ok ? undefined : `turn ${turn}: agent did not say any of: ${expect.agent_says_any.join(' | ')}`;
     checks.push({ type: 'agent_says_any', ok, ...(detail ? { detail } : {}) });
     if (detail) failures.push(detail);
   }
+  }
   if (expect.agent_says_all) {
+    if (noTranscript) skip(checks, skipped, 'agent_says_all');
+    else {
     const missing = expect.agent_says_all.filter((phrase) => !includes(said, phrase));
     const ok = missing.length === 0;
     const detail = ok ? undefined : `turn ${turn}: agent did not say all of: ${missing.join(' | ')}`;
     checks.push({ type: 'agent_says_all', ok, ...(detail ? { detail } : {}) });
     if (detail) failures.push(detail);
   }
+  }
   if (expect.agent_says_regex) {
+    if (noTranscript) skip(checks, skipped, 'agent_says_regex');
+    else {
     let ok = false;
     let detail: string | undefined;
     try {
@@ -47,19 +61,26 @@ export function evaluateExpectations(input: ExpectInput): { checks: CheckResult[
     checks.push({ type: 'agent_says_regex', ok, ...(detail ? { detail } : {}) });
     if (detail) failures.push(detail);
   }
+  }
   if (expect.agent_not_says) {
+    if (noTranscript) skip(checks, skipped, 'agent_not_says');
+    else {
     const hit = expect.agent_not_says.find((phrase) => includes(said, phrase));
     const ok = hit === undefined;
     const detail = ok ? undefined : `turn ${turn}: agent said "${hit}"`;
     checks.push({ type: 'agent_not_says', ok, ...(detail ? { detail } : {}) });
     if (detail) failures.push(detail);
   }
+  }
   if (expect.agent_heard) {
+    if (noTranscript) skip(checks, skipped, 'agent_heard');
+    else {
     const missing = expect.agent_heard.filter((phrase) => !includes(heard, phrase));
     const ok = missing.length === 0;
     const detail = ok ? undefined : `turn ${turn}: agent did not hear: ${missing.join(' | ')}`;
     checks.push({ type: 'agent_heard', ok, ...(detail ? { detail } : {}) });
     if (detail) failures.push(detail);
+  }
   }
   if (expect.agent_silent) {
     const ok = !input.newAudio && said.trim() === '';
@@ -105,12 +126,28 @@ export function evaluateExpectations(input: ExpectInput): { checks: CheckResult[
     });
     if (detail) failures.push(detail);
   }
-  if (input.barged && expectsSpeech(expect) && !input.newAudio && !expect.agent_silent) {
+  if (expect.require_clear && input.barged) {
+    const received = input.clear?.received === true;
+    const detail = received ? undefined : `turn ${turn}: barge-in did not receive clear`;
+    checks.push({
+      type: 'require_clear',
+      ok: received,
+      ...(input.clear?.msToClear !== undefined && input.clear.msToClear !== null ? { value: input.clear.msToClear } : {}),
+      ...(detail ? { detail } : {}),
+    });
+    if (detail) failures.push(detail);
+  }
+  if (input.barged && expectsSpeech(expect) && !input.newAudio && !expect.agent_silent && !noTranscript) {
     const detail = `turn ${turn}: agent was silent after the interruption`;
     checks.push({ type: 'agent_silent_after_barge', ok: false, detail });
     failures.push(detail);
   }
-  return { checks, failures };
+  return { checks, failures, skipped };
+}
+
+function skip(checks: CheckResult[], skipped: string[], type: string): void {
+  checks.push({ type, ok: true, detail: 'skipped (no transcript)' });
+  skipped.push(type);
 }
 
 export function expectsSpeech(expect: Expectation | undefined): boolean {

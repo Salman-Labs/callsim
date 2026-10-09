@@ -4,8 +4,9 @@
  * A transport joins one voice agent as the caller and plays a fixed script.
  * The scenario runner (`callsim run`) talks only to this interface, so Twilio
  * Media Streams, Vapi, Retell, SIP, and LiveKit can plug in later without a
- * new scenario format. LiveKit is the first adapter (`src/livekit/transport.ts`).
- * The Twilio engine (`simulateCall`) is intentionally not on this interface yet.
+ * new scenario format. LiveKit is `src/livekit/transport.ts`. Twilio Media
+ * Streams is `src/twilio/transport.ts` and reuses the simulator's protocol,
+ * μ-law frames, and playback clock. `simulateCall` remains the one-shot API.
  *
  * Methods:
  * - `connect` joins the call. It must not print API keys, secrets, or tokens.
@@ -71,6 +72,28 @@ export interface Transport {
 
   /** Leave the call and release server-side resources. Idempotent. */
   hangup(): Promise<void>;
+
+  /**
+   * True when the platform already supplies what the agent said and heard.
+   * Twilio does not; a scenario can add `stt:` or the says/heard checks are skipped.
+   */
+  hasNativeTranscript(): boolean;
+
+  /** Platform counters. Twilio fills `twilio`. */
+  snapshot(): TransportSnapshot;
+}
+
+export interface TwilioCallStats {
+  streamSid: string;
+  callSid: string;
+  underruns: { count: number; longestGapMs: number; gapsMs: number[] };
+  marks: { received: number; echoed: number; played: number; cleared: number };
+  formatProblemCount: number;
+  clears: { atMs: number; msFromBarge: number | null; agentAudioAfterMs: number }[];
+}
+
+export interface TransportSnapshot {
+  twilio?: TwilioCallStats;
 }
 
 export interface TransportConnectOptions {
@@ -104,6 +127,8 @@ export interface CallerPlayout {
   startedAtMs: number;
   /** Milliseconds from connect start to real playout end. */
   endedAtMs: number;
+  /** Set when this clip started while the agent was still playing. Twilio fills it from `clear`. */
+  barge?: { clearReceived: boolean; msToClear: number | null; agentAudioAfterMs: number };
 }
 
 export interface AgentAudioFrame {

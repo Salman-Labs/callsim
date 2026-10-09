@@ -1,4 +1,4 @@
-import type { AgentAudioFrame, AgentPresence, AgentVadEvent, CallerAudio, CallerPlayout, TranscriptEvent, Transport, TransportConnectOptions } from '../transport.js';
+import type { AgentAudioFrame, AgentPresence, AgentVadEvent, CallerAudio, CallerPlayout, TranscriptEvent, Transport, TransportConnectOptions, TransportSnapshot } from '../transport.js';
 import { ScenarioConnectionError, ScenarioUsageError, scrubSecrets } from '../scenario/errors.js';
 import { resampleLinear } from '../wav.js';
 import { EnergyVad } from '../vad.js';
@@ -186,6 +186,14 @@ class LiveKitTransport implements Transport {
 
   warnings(): readonly string[] {
     return this.warningsList;
+  }
+
+  hasNativeTranscript(): boolean {
+    return true;
+  }
+
+  snapshot(): TransportSnapshot {
+    return {};
   }
 
   async hangup(): Promise<void> {
