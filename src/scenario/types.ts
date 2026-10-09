@@ -2,7 +2,9 @@ export interface ScenarioFile {
   name?: string;
   transport: string;
   livekit?: LiveKitFileConfig;
+  twilio?: TwilioFileConfig;
   voice?: VoiceConfig;
+  stt?: SttConfig;
   defaults?: ScenarioDefaults;
   scenarios: ScenarioCase[];
   /** Directory containing the file. Set by the loader. */
@@ -21,6 +23,19 @@ export interface LiveKitFileConfig {
   };
 }
 
+export interface TwilioFileConfig {
+  url?: string;
+  params?: Record<string, string>;
+}
+
+export type SttProvider = 'deepgram' | 'openai' | 'whisper-local';
+
+export interface SttConfig {
+  provider: SttProvider;
+  model?: string;
+  language?: string;
+}
+
 export interface VoiceConfig {
   tts?: string;
   voice?: string;
@@ -32,6 +47,8 @@ export interface ScenarioDefaults {
   max_first_audio_ms?: number;
   max_yield_ms?: number;
   max_agent_audio_after_barge_ms?: number;
+  /** Longest Twilio playback underrun, in milliseconds. */
+  max_gap_ms?: number;
   silence_ms?: number;
 }
 
@@ -65,6 +82,10 @@ export interface Expectation {
   max_first_audio_ms?: number;
   max_yield_ms?: number;
   max_agent_audio_after_barge_ms?: number;
+  /** Twilio: fail unless `clear` arrives for this barge-in. */
+  require_clear?: boolean;
+  /** Twilio: longest playback underrun allowed for the call. */
+  max_gap_ms?: number;
 }
 
 export type ScenarioVerify =
@@ -118,6 +139,15 @@ export interface ReportTranscriptLine {
   t: number;
 }
 
+export interface TwilioReportStats {
+  streamSid: string;
+  callSid: string;
+  underruns: { count: number; longestGapMs: number; gapsMs: number[] };
+  marks: { received: number; echoed: number; played: number; cleared: number };
+  formatProblemCount: number;
+  clears: { atMs: number; msFromBarge: number | null; agentAudioAfterMs: number }[];
+}
+
 export interface JudgeResult {
   ran: boolean;
   ok: boolean | null;
@@ -152,6 +182,8 @@ export interface ScenarioReport {
   transcript: ReportTranscriptLine[];
   artifacts: { wav?: string; events?: string };
   versions: { callsim: string; rtcNode?: string };
+  /** Present for `transport: twilio`. Underruns, marks, and clear timing. */
+  twilio?: TwilioReportStats;
   durationMs?: number;
   error?: { code: string; message: string; exitCode: 1 | 2 };
 }

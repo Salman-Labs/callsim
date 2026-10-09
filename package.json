@@ -1,6 +1,6 @@
 {
   "name": "voice-callsim",
-  "version": "0.2.0-dev.1",
+  "version": "0.2.0-dev.2",
   "description": "Scripted caller tests for voice agents on Twilio Media Streams and LiveKit, locally and in CI.",
   "type": "module",
   "license": "MIT",
@@ -71,13 +71,17 @@
   },
   "peerDependencies": {
     "@livekit/rtc-node": "^1.1.0",
-    "livekit-server-sdk": "^2.19.1"
+    "livekit-server-sdk": "^2.19.1",
+    "smart-whisper": "^0.8.1"
   },
   "peerDependenciesMeta": {
     "@livekit/rtc-node": {
       "optional": true
     },
     "livekit-server-sdk": {
+      "optional": true
+    },
+    "smart-whisper": {
       "optional": true
     }
   },

@@ -55,6 +55,52 @@ Installed from npm, the same flags are `npx voice-callsim ws://127.0.0.1:8080 ..
 
 `http://` and `https://` URLs are rewritten to `ws://` and `wss://`.
 
+The same bots can be driven from a scenario file. `transport: twilio` uses this engine (μ-law frames, real-time pacing, `mark`, and `clear`) and writes `callsim.report/1`. Twilio counters sit on `report.twilio`: underruns, mark round-trips, and whether barge-in received `clear`.
+
+```yaml
+name: Media stream regression
+transport: twilio
+twilio:
+  url: ws://127.0.0.1:8080
+  params:
+    voice: test
+defaults:
+  max_first_audio_ms: 500
+  max_gap_ms: 80
+scenarios:
+  - label: Hello barge-in
+    turns:
+      - audio: fixtures/hello.wav
+      - audio: fixtures/hello.wav
+        barge_in_after_ms: 120
+        expect:
+          require_clear: true
+      - dtmf: "5"
+```
+
+```bash
+node dist/cli.js run hello.yaml --json --ci
+```
+
+`max_gap_ms` is the longest playback underrun. `require_clear` fails when a barge-in does not get `clear`. The one-shot `callsim <ws-url>` command is unchanged.
+
+### Speech to text
+
+LiveKit already publishes what the agent said and what it heard. Twilio does not. Without a transcript, `agent_says_*` and `agent_heard` are reported as `skipped (no transcript)` and listed in `warnings`, so a timing-only scenario still passes. To score the words, set `stt`:
+
+```yaml
+stt:
+  provider: openai    # or deepgram, or whisper-local
+```
+
+OpenAI uses `OPENAI_API_KEY` (and optional `OPENAI_BASE_URL`). Deepgram uses `DEEPGRAM_API_KEY`. Both are plain `fetch` calls. The keys are never printed. `whisper-local` is an optional peer, loaded only when selected:
+
+```bash
+npm install smart-whisper
+```
+
+Point `stt.model` or `WHISPER_MODEL` at a ggml model file. If the package is missing, callsim exits 2 and prints that install line.
+
 ## Voice agents on LiveKit
 
 `callsim run` reads a YAML scenario, opens one fresh room per scenario, and writes `callsim.report/1` JSON to `.callsim/runs/<runId>/report.json` plus a stereo `call.wav` (caller left, agent right) and `events.jsonl`. Exit codes stay 0 for pass, 1 for a failed check, and 2 for a usage or connection error.
@@ -183,7 +229,7 @@ If Cloud rejects a token with participant kind `sip`, callsim reconnects as `sta
 
 ### Transport interface
 
-Scenario files do not talk to a vendor SDK. They talk to a `Transport`: `connect`, `waitForAgent`, `playCallerAudio` (real playout, not enqueue), `sendDtmf`, an agent-audio stream with energy VAD start and stop, agent transcript events, the caller's heard text when the platform has it, and `hangup`. LiveKit is the first implementation (`createLiveKitTransport`). Twilio, Vapi, Retell, and SIP can implement the same interface later. The existing `simulateCall` API and `callsim <ws-url>` behavior are unchanged.
+Scenario files do not talk to a vendor SDK. They talk to a `Transport`: `connect`, `waitForAgent`, `playCallerAudio` (real playout, not enqueue), `sendDtmf`, an agent-audio stream with energy VAD start and stop, agent transcript events, the caller's heard text when the platform has it, and `hangup`. LiveKit (`createLiveKitTransport`) and Twilio Media Streams (`createTwilioTransport`) implement it. Vapi, Retell, and SIP can follow. The existing `simulateCall` API and `callsim <ws-url>` behavior are unchanged.
 
 ## Use with coding agents
 

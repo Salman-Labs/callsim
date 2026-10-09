@@ -5,14 +5,14 @@ description: Run scripted test phone calls against a LiveKit or Twilio Media Str
 
 # callsim
 
-callsim places a scripted caller against a voice agent and fails the run when latency, barge-in, DTMF, or the transcript misses a gate. The scenario file is the same shape across platforms. LiveKit is the `callsim run` transport. Twilio Media Streams still uses `callsim <ws-url>`.
+callsim places a scripted caller against a voice agent and fails the run when latency, barge-in, DTMF, or the transcript misses a gate. One scenario file drives both transports: `transport: livekit` joins a room, `transport: twilio` speaks the Media Streams WebSocket (`twilio.url`, optional `params`). The original `callsim <ws-url>` command is still the one-shot Twilio API.
 
 ## Before running
 
 1. Do not print API keys, API secrets, or access tokens. If a command would echo them, stop.
-2. For LiveKit, `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` must be set. Confirm with a name-only check (`callsim validate <file>` lists missing names). Never print the values.
-3. The agent worker is running. If the scenario sets `agent_name`, the worker is registered under that name. With no `agent_name`, unnamed workers join every new room.
-4. Install the LiveKit peers once when that transport is used: `npm install @livekit/rtc-node livekit-server-sdk`.
+2. For LiveKit, `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` must be set. For Twilio scenarios, `twilio.url` is the bot's Media Stream WebSocket (`ws://` or `wss://`). Confirm with `callsim validate <file>`. It lists missing variable names and never prints values.
+3. The agent is running. LiveKit: `agent_name` matches the worker, or the worker is unnamed and joins every room. Twilio: the WebSocket server from `twilio.url` is accepting connections.
+4. Install peers only for the transport you use. LiveKit: `npm install @livekit/rtc-node livekit-server-sdk`. Local whisper: `npm install smart-whisper` and set `WHISPER_MODEL`.
 5. `callsim validate <file>` before the first run. Fix schema errors and missing env names first.
 
 ## Run
@@ -34,7 +34,8 @@ Add `--label`, `--tags key=value`, `--ci`, and `--junit out.xml` when a subset o
 | What failed | What to check |
 | --- | --- |
 | `agent_not_joined` | The worker process, and that `agent_name` matches the name it registered. Automatic dispatch only picks up workers that did not set a name. |
-| `agent_heard` does not match | Caller audio, the TTS cache, and `phone_band`. This text is the agent's own transcript of the caller, not a second STT pass inside callsim. |
+| `agent_heard` does not match | Caller audio, the TTS cache, and `phone_band`. On LiveKit this is the agent's own transcript of the caller. On Twilio it is the `stt` provider, if one is set. |
+| `skipped (no transcript)` | The transport has no transcript and the scenario has no `stt`. Timing checks still count. Add `stt.provider: openai` or `deepgram` (keys from the environment, never printed) or `whisper-local`. |
 | `firstAudioMs` is high | Open `events.jsonl` and split the wait by `lk.agent.state` (`listening`, `thinking`, `speaking`) when the agent publishes it. |
 | `yieldMs` is high | The agent's interruption and endpointing settings. Yield is measured from the start of caller audio until agent audio stays quiet. |
 | Silent after an interruption | The agent produced no new utterance after barge-in. On LiveKit Agents this is the class of bug where an interrupted reply never starts the next one. |
@@ -43,7 +44,8 @@ Add `--label`, `--tags key=value`, `--ci`, and `--junit out.xml` when a subset o
 ## Writing scenarios
 
 - One complication per scenario. A barge-in case should not also be the only place that checks the transfer flow.
-- Prefer `agent_says_any` or `agent_says_regex` over a full expected sentence. Agent wording moves.
+- Prefer `agent_says_any` or `agent_says_regex` over a full expected sentence. Agent wording moves. On Twilio, those checks need `stt` or they are skipped.
+- Twilio barge-in: `require_clear: true` fails unless `clear` arrives. `max_gap_ms` is the longest playback underrun. Both show up under `report.twilio` with mark round-trips.
 - Put numeric gates in `defaults` (`max_first_audio_ms`, `silence_ms`) and override them on the turn that needs a tighter bound.
 - Use `audio:` WAV files, or commit `.callsim/tts/<sha256>.wav`, so a rerun does not need a TTS key.
 - When the pass condition is something the caller cannot hear (an order row, a ticket, a webhook), add `verify`. That is either `{ run, expect_exit }` or `{ http: { url, expect_status, expect_json } }`. `expect_json` is a map of dotted paths to expected values. Put secrets in `${VAR}` and keep them out of the file.

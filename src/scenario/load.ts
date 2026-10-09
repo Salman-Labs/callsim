@@ -11,6 +11,8 @@ import type {
   ScenarioFile,
   ScenarioTurn,
   ScenarioVerify,
+  SttConfig,
+  TwilioFileConfig,
   VoiceConfig,
 } from './types.js';
 
@@ -51,7 +53,9 @@ export function loadScenarioDocument(data: Record<string, unknown>, path: string
     ...(typeof data.name === 'string' ? { name: data.name } : {}),
     transport,
     ...(data.livekit !== undefined ? { livekit: livekitConfig(data.livekit, `${path} livekit`) } : {}),
+    ...(data.twilio !== undefined ? { twilio: twilioConfig(data.twilio, `${path} twilio`) } : {}),
     ...(data.voice !== undefined ? { voice: voiceConfig(data.voice, `${path} voice`) } : {}),
+    ...(data.stt !== undefined ? { stt: sttConfig(data.stt, `${path} stt`) } : {}),
     ...(data.defaults !== undefined ? { defaults: defaultsConfig(data.defaults, `${path} defaults`) } : {}),
     scenarios: scenarios.map((item, index) => scenarioCase(item, `${path} scenarios[${index}]`)),
     dir: resolve(path, '..'),
@@ -180,6 +184,8 @@ function expectation(value: unknown, where: string): Expectation {
   if (obj.agent_silent !== undefined) expect.agent_silent = bool(obj.agent_silent, `${where}.agent_silent`);
   if (obj.max_first_audio_ms !== undefined) expect.max_first_audio_ms = nonNegative(obj.max_first_audio_ms, `${where}.max_first_audio_ms`);
   if (obj.max_yield_ms !== undefined) expect.max_yield_ms = nonNegative(obj.max_yield_ms, `${where}.max_yield_ms`);
+  if (obj.require_clear !== undefined) expect.require_clear = bool(obj.require_clear, `${where}.require_clear`);
+  if (obj.max_gap_ms !== undefined) expect.max_gap_ms = nonNegative(obj.max_gap_ms, `${where}.max_gap_ms`);
   if (obj.max_agent_audio_after_barge_ms !== undefined) {
     expect.max_agent_audio_after_barge_ms = nonNegative(obj.max_agent_audio_after_barge_ms, `${where}.max_agent_audio_after_barge_ms`);
   }
@@ -209,6 +215,28 @@ function scenarioVerify(value: unknown, where: string): ScenarioVerify {
     };
   }
   throw new ScenarioUsageError(`${where} needs run or http`);
+}
+
+function twilioConfig(value: unknown, where: string): TwilioFileConfig {
+  const obj = mapping(value, where);
+  const params = obj.params === undefined ? undefined : stringMap(obj.params, `${where}.params`);
+  return {
+    ...(obj.url !== undefined ? { url: requiredString(obj.url, `${where}.url`) } : {}),
+    ...(params ? { params } : {}),
+  };
+}
+
+function sttConfig(value: unknown, where: string): SttConfig {
+  const obj = mapping(value, where);
+  const provider = requiredString(obj.provider, `${where}.provider`);
+  if (provider !== 'deepgram' && provider !== 'openai' && provider !== 'whisper-local') {
+    throw new ScenarioUsageError(`${where}.provider must be deepgram, openai, or whisper-local`);
+  }
+  return {
+    provider,
+    ...(obj.model !== undefined ? { model: requiredString(obj.model, `${where}.model`) } : {}),
+    ...(obj.language !== undefined ? { language: requiredString(obj.language, `${where}.language`) } : {}),
+  };
 }
 
 function livekitConfig(value: unknown, where: string): LiveKitFileConfig {
@@ -255,6 +283,7 @@ function defaultsConfig(value: unknown, where: string): ScenarioDefaults {
     ...(obj.max_agent_audio_after_barge_ms !== undefined
       ? { max_agent_audio_after_barge_ms: nonNegative(obj.max_agent_audio_after_barge_ms, `${where}.max_agent_audio_after_barge_ms`) }
       : {}),
+    ...(obj.max_gap_ms !== undefined ? { max_gap_ms: nonNegative(obj.max_gap_ms, `${where}.max_gap_ms`) } : {}),
     ...(obj.silence_ms !== undefined ? { silence_ms: nonNegative(obj.silence_ms, `${where}.silence_ms`) } : {}),
   };
 }

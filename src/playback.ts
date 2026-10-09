@@ -23,6 +23,8 @@ export interface PlaybackOptions {
   onMark: (name: string, reason: 'playback' | 'clear') => void;
   onUtteranceStart: (now: number) => void;
   onUtteranceEnd: () => void;
+  /** PCM at the moment Twilio would play it, not when the frame was queued. */
+  onPlayed?: (pcm: Int16Array, atMs: number) => void;
 }
 
 /**
@@ -126,7 +128,9 @@ export class Playback {
     }
     const started = performance.now();
     this.playing = { pcm: next.pcm, startedPerf: started, durationMs: next.durationMs };
-    this.opts.recording.write(1, started - this.opts.streamStartedAt(), next.pcm);
+    const atMs = started - this.opts.streamStartedAt();
+    this.opts.recording.write(1, atMs, next.pcm);
+    this.opts.onPlayed?.(next.pcm, atMs);
     this.arm(started + next.durationMs, () => {
       this.playing = null;
       this.pump(performance.now());
