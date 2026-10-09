@@ -93,7 +93,7 @@ describe('cli', () => {
 
   it('runs the built bin', async () => {
     const { stdout } = await execFileAsync('node', ['dist/cli.js', '--version'], { cwd: process.cwd() });
-    expect(stdout).toContain('voice-callsim 0.2.0-dev.2');
+    expect(stdout).toContain('voice-callsim 0.2.0');
   });
 });
 

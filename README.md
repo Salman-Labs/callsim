@@ -168,7 +168,7 @@ The runner scores `agent_says_any`, `agent_says_all`, `agent_says_regex`, `agent
 npx voice-callsim run scenarios/*.yaml --label "Two large pepperonis for pickup" --json --ci --junit callsim.xml
 ```
 
-`run` ships in 0.2. Until that version is published, use `node dist/cli.js run` from a checkout of this repo. The Twilio command in the CI section below is the published 0.1 CLI.
+`run` is `npx voice-callsim run`. From a checkout, `node dist/cli.js run` is the same command. The Twilio example further down pins `voice-callsim@0.1.0`, which is the one-shot Media Streams CLI.
 
 `examples/scenarios/order.yaml` is the same shape, played from `fixtures/*.wav` so it needs no TTS key. `npm run example:livekit-good` is a scripted participant (kind agent) that handles barge-in. `npm run example:livekit-buggy` keeps talking and then goes silent. Against `livekit-server --dev` the good one passes and the buggy one fails the yield and silence checks.
 
@@ -269,7 +269,7 @@ Codex ([`codex mcp add`](https://learn.chatgpt.com/docs/extend/mcp)):
 codex mcp add callsim -- npx -y voice-callsim mcp
 ```
 
-From a checkout of this repo, before 0.2 is published, the same server is `node dist/cli.js mcp`.
+From a checkout of this repo, the same server is `node dist/cli.js mcp`.
 
 ## CLI
 
