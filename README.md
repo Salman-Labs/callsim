@@ -185,6 +185,46 @@ If Cloud rejects a token with participant kind `sip`, callsim reconnects as `sta
 
 Scenario files do not talk to a vendor SDK. They talk to a `Transport`: `connect`, `waitForAgent`, `playCallerAudio` (real playout, not enqueue), `sendDtmf`, an agent-audio stream with energy VAD start and stop, agent transcript events, the caller's heard text when the platform has it, and `hangup`. LiveKit is the first implementation (`createLiveKitTransport`). Twilio, Vapi, Retell, and SIP can implement the same interface later. The existing `simulateCall` API and `callsim <ws-url>` behavior are unchanged.
 
+## Use with coding agents
+
+`callsim mcp` is a stdio MCP server. The tools are `list_scenarios`, `validate_scenario`, `run_scenario`, `get_report`, `list_runs`, and `compare_runs`. `run_scenario` is not read-only: it can spend the agent under test its own STT, LLM, and TTS. The server runs one scenario at a time and does not return API keys. `validate_scenario` names missing environment variables and does not print their values.
+
+A skill ships at `skills/callsim/SKILL.md` (included in the npm package):
+
+```bash
+npx skills add Salman-Labs/callsim
+```
+
+Install lines below were checked against the current docs (Claude Code stdio, Cursor `mcp.json`, Codex MCP).
+
+Claude Code ([stdio servers](https://code.claude.com/docs/en/mcp)):
+
+```bash
+claude mcp add callsim -- npx -y voice-callsim mcp
+```
+
+Cursor ([mcp.json](https://cursor.com/docs/mcp)), project file `.cursor/mcp.json` or global `~/.cursor/mcp.json`. The STDIO `type` field is required:
+
+```json
+{
+  "mcpServers": {
+    "callsim": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "voice-callsim", "mcp"]
+    }
+  }
+}
+```
+
+Codex ([`codex mcp add`](https://learn.chatgpt.com/docs/extend/mcp)):
+
+```bash
+codex mcp add callsim -- npx -y voice-callsim mcp
+```
+
+From a checkout of this repo, before 0.2 is published, the same server is `node dist/cli.js mcp`.
+
 ## CLI
 
 The npm package is `voice-callsim`. Both `voice-callsim` and `callsim` run the same CLI.
