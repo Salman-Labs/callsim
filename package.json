@@ -1,6 +1,6 @@
 {
   "name": "voice-callsim",
-  "version": "0.2.0-dev.2",
+  "version": "0.2.0",
   "description": "Scripted caller tests for voice agents on Twilio Media Streams and LiveKit, locally and in CI.",
   "type": "module",
   "license": "MIT",
