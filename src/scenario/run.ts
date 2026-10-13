@@ -415,14 +415,15 @@ async function runTurn(ctx: TurnContext): Promise<{
       })
     : { checks: [], failures: [] as string[], skipped: [] as string[] };
 
-  const yieldChecks = evaluated.checks.filter((check) => check.type === 'max_yield_ms' || check.type === 'max_agent_audio_after_barge_ms');
+  const bargeTypes = new Set(['max_yield_ms', 'max_agent_audio_after_barge_ms', 'require_clear', 'agent_silent_after_barge']);
+  const bargeChecks = evaluated.checks.filter((check) => bargeTypes.has(check.type));
   const barge: ReportBargeIn | undefined =
     turn.barge_in_after_ms !== undefined
       ? {
           turn: n,
           yieldMs: yieldMs ?? 0,
           agentAudioAfterMs: agentAudioAfterMs ?? 0,
-          ok: yieldChecks.every((check) => check.ok),
+          ok: bargeChecks.every((check) => check.ok),
         }
       : undefined;
 

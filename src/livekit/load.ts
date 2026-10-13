@@ -50,11 +50,14 @@ export interface LiveKitModules {
   sdk: SdkModule;
 }
 
+let liveKitImported = false;
+
 export async function importLiveKit(): Promise<LiveKitModules> {
   try {
     await quietLiveKitLog();
     const rtc = (await import('@livekit/rtc-node')) as RtcModule;
     const sdk = (await import('livekit-server-sdk')) as SdkModule;
+    liveKitImported = true;
     return { rtc, sdk };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -62,6 +65,26 @@ export async function importLiveKit(): Promise<LiveKitModules> {
       throw new ScenarioUsageError(missingLiveKitMessage());
     }
     throw new ScenarioUsageError(`${missingLiveKitMessage()}\n${message}`);
+  }
+}
+
+/**
+ * Shut down the LiveKit native runtime. A CLI that connected a room will
+ * otherwise stay up after the report is printed. No-op until `importLiveKit`.
+ */
+export async function shutdownLiveKit(): Promise<void> {
+  if (!liveKitImported) return;
+  try {
+    const rtc = (await import('@livekit/rtc-node')) as { dispose?: () => Promise<void> };
+    if (!rtc.dispose) return;
+    await Promise.race([
+      rtc.dispose(),
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 2_000).unref();
+      }),
+    ]);
+  } catch {
+    // The caller still exits with the scenario code.
   }
 }
 
@@ -73,11 +96,11 @@ export interface RtcModule {
   };
   AudioSource: new (sampleRate: number, channels: number, queueMs?: number) => RtcAudioSource;
   AudioFrame: new (data: Int16Array, sampleRate: number, channels: number, samplesPerChannel: number) => unknown;
-  LocalAudioTrack: { createAudioTrack(name: string, source: RtcAudioSource): unknown };
+  LocalAudioTrack: { createAudioTrack(name: string, source: RtcAudioSource): RtcLocalAudioTrack };
   AudioStream: new (
     track: unknown,
     options: { sampleRate?: number; numChannels?: number; frameSizeMs?: number },
-  ) => AsyncIterable<RtcAudioFrame>;
+  ) => RtcAudioStream;
   TrackPublishOptions: new (init?: { source?: number }) => unknown;
   TrackSource: { SOURCE_MICROPHONE: number };
   TrackKind: { KIND_AUDIO: number };
@@ -94,7 +117,21 @@ export interface SdkModule {
     key: string,
     secret: string,
   ) => { createDispatch(room: string, agentName: string, options?: { metadata?: string }): Promise<unknown> };
-  RoomServiceClient: new (host: string, key: string, secret: string) => { deleteRoom(room: string): Promise<void> };
+  RoomServiceClient: new (
+    host: string,
+    key: string,
+    secret: string,
+  ) => {
+    deleteRoom(room: string): Promise<void>;
+    listParticipants(room: string): Promise<RtcParticipantInfo[]>;
+    removeParticipant(room: string, identity: string): Promise<void>;
+    mutePublishedTrack(room: string, identity: string, trackSid: string, muted: boolean): Promise<unknown>;
+  };
+}
+
+export interface RtcParticipantInfo {
+  identity?: string;
+  tracks?: { sid?: string }[];
 }
 
 interface RtcToken {
@@ -112,7 +149,18 @@ export interface RtcRoom {
     topic: string,
     callback: (reader: RtcTextReader, participant: { identity: string }) => void,
   ): void;
+  unregisterTextStreamHandler(topic: string): void;
+  removeAllListeners(): void;
   on(event: string, listener: (...args: unknown[]) => void): void;
+}
+
+export interface RtcAudioStream extends AsyncIterable<RtcAudioFrame> {
+  cancel(): Promise<void>;
+}
+
+export interface RtcLocalAudioTrack {
+  close(closeSource?: boolean): Promise<void>;
+  closeAudioStreams?(): void;
 }
 
 export interface RtcAudioSource {
@@ -133,7 +181,9 @@ interface RtcLocalParticipant {
   identity: string;
   kind: number | string;
   publishTrack(track: unknown, options: unknown): Promise<{ sid?: string }>;
+  unpublishTrack(trackSid: string, stopOnUnpublish?: boolean): Promise<void>;
   publishDtmf(code: number, digit: string): Promise<void>;
+  trackPublications: Map<string, { sid?: string; track?: RtcLocalAudioTrack }>;
 }
 
 export interface RtcRemoteParticipant {
@@ -143,7 +193,8 @@ export interface RtcRemoteParticipant {
   trackPublications: Map<string, { sid?: string; kind?: number; track?: unknown }>;
 }
 
-interface RtcTextReader {
+export interface RtcTextReader {
   readAll(): Promise<string>;
+  close(): Promise<void>;
   info: { attributes?: Record<string, string> };
 }

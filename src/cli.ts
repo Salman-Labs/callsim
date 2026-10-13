@@ -13,6 +13,7 @@ import { SimulateCallError, simulateCall } from './simulate.js';
 import { reportJson } from './thresholds.js';
 import type { Thresholds, TurnInput } from './types.js';
 import { runScenariosCommand } from './cli-run.js';
+import { shutdownLiveKit } from './livekit/load.js';
 import { packageVersion } from './version.js';
 
 interface CliIo {
@@ -334,11 +335,24 @@ function invokedDirectly(): boolean {
 
 if (invokedDirectly()) {
   runCli(process.argv.slice(2))
-    .then((code) => {
-      process.exitCode = code;
-    })
+    .then((code) => finishProcess(code))
     .catch((err: unknown) => {
       console.error(err instanceof Error ? err.message : err);
-      process.exitCode = 2;
+      finishProcess(2);
     });
+}
+
+function finishProcess(code: number): void {
+  process.exitCode = code;
+  const exit = (): void => {
+    process.exit(code);
+  };
+  const backup = setTimeout(exit, 3_000);
+  backup.unref();
+  void shutdownLiveKit().finally(() => {
+    process.stdout.write('', () => {
+      clearTimeout(backup);
+      exit();
+    });
+  });
 }

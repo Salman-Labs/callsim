@@ -3,7 +3,17 @@ import { ScenarioConnectionError, ScenarioUsageError, scrubSecrets } from '../sc
 import { resampleLinear } from '../wav.js';
 import { EnergyVad } from '../vad.js';
 import { kindName, resolveCallerKind } from './kind.js';
-import { importLiveKit, type LiveKitModules, type RtcAudioFrame, type RtcAudioSource, type RtcRemoteParticipant, type RtcRoom } from './load.js';
+import {
+  importLiveKit,
+  type LiveKitModules,
+  type RtcAudioSource,
+  type RtcAudioStream,
+  type RtcLocalAudioTrack,
+  type RtcParticipantInfo,
+  type RtcRemoteParticipant,
+  type RtcRoom,
+  type RtcTextReader,
+} from './load.js';
 
 const PUBLISH_RATE = 48_000;
 const FRAME_SAMPLES = 480;
@@ -30,12 +40,17 @@ class LiveKitTransport implements Transport {
   private attributes: Record<string, string> = {};
   private requestedKind: 'sip' | 'standard' = 'standard';
   private callerTrackSid: string | undefined;
+  private localTrack: RtcLocalAudioTrack | undefined;
   private agentTrackSid: string | undefined;
   private agentIdentity: string | undefined;
   private agentJoinedMs: number | undefined;
   private state: string | null = null;
   private readonly subscribed = new Set<string>();
   private readonly warningsList: string[] = [];
+  private readonly audioStreams = new Set<RtcAudioStream>();
+  private readonly agentTracks: RtcLocalAudioTrack[] = [];
+  private readonly readers = new Set<RtcTextReader>();
+  private readonly waiters: { timer: ReturnType<typeof setTimeout>; resolve: () => void }[] = [];
   private hungUp = false;
   private readonly vad = new EnergyVad();
   private readonly audioListeners = new Set<(frame: AgentAudioFrame) => void>();
@@ -96,6 +111,7 @@ class LiveKitTransport implements Transport {
     }
     this.source = new modules.rtc.AudioSource(PUBLISH_RATE, 1, 5_000);
     const track = modules.rtc.LocalAudioTrack.createAudioTrack('callsim-caller', this.source);
+    this.localTrack = track;
     const published = await local.publishTrack(
       track,
       new modules.rtc.TrackPublishOptions({ source: modules.rtc.TrackSource.SOURCE_MICROPHONE }),
@@ -118,7 +134,7 @@ class LiveKitTransport implements Transport {
       if (this.agentIdentity && (this.agentTrackSid || this.hasAgentAudioPublication())) {
         return { identity: this.agentIdentity, joinedMs: this.agentJoinedMs ?? this.now() };
       }
-      await delay(50);
+      await this.delay(50);
     }
     throw new ScenarioConnectionError(
       `agent_not_joined: no participant with kind agent published audio within ${timeoutMs} ms. Check that a worker is running, and agent_name if you use explicit dispatch.`,
@@ -202,13 +218,7 @@ class LiveKitTransport implements Transport {
     const name = this.roomName;
     const modules = this.modules;
     await this.closeRoom();
-    if (!name || !modules || !this.httpUrl || !this.apiKey || !this.apiSecret) return;
-    try {
-      const rooms = new modules.sdk.RoomServiceClient(this.httpUrl, this.apiKey, this.apiSecret);
-      await rooms.deleteRoom(name);
-    } catch {
-      // The room is already gone when the last participant left.
-    }
+    await this.clearServerRoom(modules, name);
   }
 
   private async dispatch(agentName: string, userdata: unknown): Promise<void> {
@@ -308,15 +318,18 @@ class LiveKitTransport implements Transport {
     if (this.subscribed.has(key)) return;
     this.subscribed.add(key);
     if (sid) this.agentTrackSid = sid;
-    void this.readAgentAudio(track);
+    const media = track as RtcLocalAudioTrack;
+    this.agentTracks.push(media);
+    void this.readAgentAudio(media);
   }
 
-  private async readAgentAudio(track: unknown): Promise<void> {
+  private async readAgentAudio(track: RtcLocalAudioTrack): Promise<void> {
     const modules = this.modules;
     if (!modules) return;
     const stream = new modules.rtc.AudioStream(track, { sampleRate: 16_000, numChannels: 1, frameSizeMs: 20 });
+    this.audioStreams.add(stream);
     try {
-      for await (const frame of stream as AsyncIterable<RtcAudioFrame>) {
+      for await (const frame of stream) {
         const channels = frame.channels || 1;
         const count = frame.samplesPerChannel > 0 ? frame.samplesPerChannel * channels : frame.data.length;
         const pcm = frame.data.subarray(0, count);
@@ -328,15 +341,21 @@ class LiveKitTransport implements Transport {
       }
     } catch {
       // Disconnect ends the stream.
+    } finally {
+      this.audioStreams.delete(stream);
     }
   }
 
-  private async consumeTranscript(reader: { readAll(): Promise<string>; info: { attributes?: Record<string, string> } }, sender: string): Promise<void> {
+  private async consumeTranscript(reader: RtcTextReader, sender: string): Promise<void> {
+    this.readers.add(reader);
     let text = '';
     try {
       text = await reader.readAll();
     } catch {
       return;
+    } finally {
+      this.readers.delete(reader);
+      await reader.close().catch(() => undefined);
     }
     const attributes = reader.info.attributes ?? {};
     const segmentId = attributes['lk.segment_id'];
@@ -360,12 +379,120 @@ class LiveKitTransport implements Transport {
   }
 
   private async closeRoom(): Promise<void> {
-    const source = this.source;
     const room = this.room;
+    const source = this.source;
+    const localTrack = this.localTrack;
+    this.clearTimers();
+    await this.closeReaders();
+    this.stopAgentAudio();
+    await this.unpublishLocal(room);
+    this.localTrack = undefined;
+    this.callerTrackSid = undefined;
+    if (localTrack) await localTrack.close(false).catch(() => undefined);
     this.source = undefined;
+    if (source) {
+      try {
+        source.clearQueue();
+      } catch {
+        // The source may already be closed.
+      }
+      await source.close().catch(() => undefined);
+    }
+    try {
+      room?.unregisterTextStreamHandler('lk.transcription');
+    } catch {
+      // No handler was registered.
+    }
     this.room = undefined;
-    if (source) await source.close().catch(() => undefined);
-    if (room) await room.disconnect().catch(() => undefined);
+    if (room) {
+      room.removeAllListeners();
+      await room.disconnect().catch(() => undefined);
+    }
+    await this.closeAgentTracks();
+  }
+
+  private async clearServerRoom(modules: LiveKitModules | undefined, name: string | undefined): Promise<void> {
+    if (!name || !modules || !this.httpUrl || !this.apiKey || !this.apiSecret) return;
+    const rooms = new modules.sdk.RoomServiceClient(this.httpUrl, this.apiKey, this.apiSecret);
+    let participants: RtcParticipantInfo[] = [];
+    try {
+      participants = await rooms.listParticipants(name);
+    } catch {
+      participants = [];
+    }
+    for (const participant of participants) {
+      const identity = participant.identity;
+      if (!identity) continue;
+      for (const track of participant.tracks ?? []) {
+        if (!track.sid) continue;
+        await rooms.mutePublishedTrack(name, identity, track.sid, true).catch(() => undefined);
+      }
+      await rooms.removeParticipant(name, identity).catch(() => undefined);
+    }
+    try {
+      await rooms.deleteRoom(name);
+    } catch {
+      // The room is already gone when the last participant left.
+    }
+  }
+
+  private async closeReaders(): Promise<void> {
+    const readers = [...this.readers];
+    this.readers.clear();
+    await Promise.all(readers.map((reader) => reader.close().catch(() => undefined)));
+  }
+
+  private stopAgentAudio(): void {
+    for (const track of this.agentTracks) {
+      try {
+        track.closeAudioStreams?.();
+      } catch {
+        // The stream is already closed.
+      }
+    }
+    for (const stream of this.audioStreams) {
+      void stream.cancel().catch(() => undefined);
+    }
+  }
+
+  private async closeAgentTracks(): Promise<void> {
+    const tracks = this.agentTracks.splice(0);
+    this.audioStreams.clear();
+    await Promise.all(tracks.map((track) => track.close?.().catch(() => undefined) ?? Promise.resolve()));
+  }
+
+  private async unpublishLocal(room: RtcRoom | undefined): Promise<void> {
+    const local = room?.localParticipant;
+    if (!local) return;
+    const sids = new Set<string>();
+    if (this.callerTrackSid) sids.add(this.callerTrackSid);
+    for (const publication of local.trackPublications.values()) {
+      if (publication.sid) sids.add(publication.sid);
+    }
+    for (const sid of sids) {
+      await local.unpublishTrack(sid, true).catch(() => undefined);
+    }
+  }
+
+  private clearTimers(): void {
+    for (const waiter of this.waiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const waiter = {
+        timer: setTimeout(() => {
+          const index = this.waiters.indexOf(waiter);
+          if (index >= 0) this.waiters.splice(index, 1);
+          resolve();
+        }, ms),
+        resolve,
+      };
+      this.waiters.push(waiter);
+    });
   }
 
   private emit(event: { t: number; type: string; [key: string]: unknown }): void {
@@ -431,6 +558,3 @@ function dtmfCode(digit: string): number {
   return code;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

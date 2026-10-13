@@ -32,6 +32,7 @@ describe('twilio scenario runner', () => {
       expect(report.twilio?.marks.echoed).toBeGreaterThan(0);
       expect(report.dtmf).toEqual([{ turn: 3, digits: '5' }]);
       expect(report.failures).toEqual([]);
+      expect(report.bargeIn[0]?.ok).toBe(true);
     } finally {
       await bot.close();
     }
@@ -48,6 +49,7 @@ describe('twilio scenario runner', () => {
       const text = report.failures.join('\n');
       expect(text).toMatch(/first audio|playback gap|did not receive clear/);
       expect(text).toMatch(/did not receive clear/);
+      expect(report.bargeIn[0]?.ok).toBe(false);
     } finally {
       await bot.close();
     }
