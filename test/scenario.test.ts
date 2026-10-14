@@ -216,8 +216,41 @@ describe('scenario runner', () => {
     const help = await capture(['run', '--help']);
     expect(help.code).toBe(0);
     expect(help.stdout).toContain('--junit');
+    expect(help.stdout).toContain('transport: twilio');
+    expect(help.stdout).toContain('twilio.url');
+    expect(help.stdout).not.toMatch(/until a later release/);
+    expect(help.stdout).not.toMatch(/stays on/i);
     expect(help.stdout).toContain('not affiliated with Twilio or LiveKit');
     expect(missingLiveKitMessage()).toContain('npm install @livekit/rtc-node livekit-server-sdk');
+  });
+
+  it('sets barge-in ok false when clear was not received', async () => {
+    const dir = scratch();
+    const hello = join(process.cwd(), 'fixtures', 'hello.wav');
+    const file = join(dir, 'clear.yaml');
+    writeAt(
+      file,
+      `name: Clear\ntransport: fake\nscenarios:\n  - label: Missing clear\n    turns:\n      - audio: ${JSON.stringify(hello)}\n        barge_in_after_ms: 30\n        expect:\n          require_clear: true\n`,
+    );
+    const missed = await runScenarios({
+      files: [file],
+      cwd: dir,
+      outDir: join(dir, 'runs-miss'),
+      transportFactory: () => bargeTransport(false),
+    });
+    expect(missed[0]?.ok).toBe(false);
+    expect(missed[0]?.failures.join('\n')).toMatch(/did not receive clear/);
+    expect(missed[0]?.bargeIn[0]?.ok).toBe(false);
+
+    const cleared = await runScenarios({
+      files: [file],
+      cwd: dir,
+      outDir: join(dir, 'runs-hit'),
+      transportFactory: () => bargeTransport(true),
+    });
+    expect(cleared[0]?.failures).toEqual([]);
+    expect(cleared[0]?.ok).toBe(true);
+    expect(cleared[0]?.bargeIn[0]?.ok).toBe(true);
   });
 
   function scratch(): string {
@@ -253,6 +286,18 @@ function quietTransport(): Transport {
   return scriptedTransport(() => undefined);
 }
 
+function bargeTransport(clearReceived: boolean): Transport {
+  const manual = new ManualTransport();
+  manual.clearOnBarge = clearReceived;
+  const original = manual.waitForAgent.bind(manual);
+  manual.waitForAgent = async (timeoutMs: number) => {
+    const presence = await original(timeoutMs);
+    setTimeout(() => manual.emitVad('start'), 5);
+    return presence;
+  };
+  return manual;
+}
+
 function scriptedTransport(onReady: (transport: ManualTransport) => void): Transport {
   const manual = new ManualTransport();
   const original = manual.waitForAgent.bind(manual);
@@ -271,6 +316,7 @@ function scriptedTransport(onReady: (transport: ManualTransport) => void): Trans
 
 class ManualTransport implements Transport {
   readonly name = 'fake';
+  clearOnBarge: boolean | null = null;
   private origin = 0;
   private vadListeners = new Set<(event: { type: 'start' | 'stop'; atMs: number; speechMs?: number }) => void>();
   private saidListeners = new Set<(event: { text: string; final: boolean; atMs: number }) => void>();
@@ -285,11 +331,28 @@ class ManualTransport implements Transport {
     return { identity: 'agent-test', joinedMs: this.now() };
   }
 
-  async playCallerAudio(audio: { pcm: Int16Array; sampleRate: number }): Promise<{ audioMs: number; startedAtMs: number; endedAtMs: number }> {
+  async playCallerAudio(audio: { pcm: Int16Array; sampleRate: number }): Promise<{
+    audioMs: number;
+    startedAtMs: number;
+    endedAtMs: number;
+    barge?: { clearReceived: boolean; msToClear: number | null; agentAudioAfterMs: number };
+  }> {
     const startedAtMs = this.now();
     const audioMs = (audio.pcm.length / audio.sampleRate) * 1000;
+    if (this.clearOnBarge !== null) this.emitVad('stop');
     await new Promise((resolve) => setTimeout(resolve, Math.max(1, audioMs)));
-    return { audioMs, startedAtMs, endedAtMs: this.now() };
+    const endedAtMs = this.now();
+    if (this.clearOnBarge === null) return { audioMs, startedAtMs, endedAtMs };
+    return {
+      audioMs,
+      startedAtMs,
+      endedAtMs,
+      barge: {
+        clearReceived: this.clearOnBarge,
+        msToClear: this.clearOnBarge ? 1 : null,
+        agentAudioAfterMs: 0,
+      },
+    };
   }
 
   async sendDtmf(): Promise<void> {}

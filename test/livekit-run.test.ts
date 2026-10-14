@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -79,6 +80,32 @@ describe.skipIf(skip)('livekit dev server', () => {
     }
   }, 90_000);
 
+  it('exits the process after a LiveKit run', async () => {
+    const good = await startScriptedAgent({ mode: 'good', url: server.url, apiKey: server.apiKey, apiSecret: server.apiSecret });
+    try {
+      const passed = await runProcess(['run', 'examples/scenarios/order.yaml', '--label', 'Pickup order', '--json', '--ci'], 45_000);
+      expect(passed.timedOut, passed.stderr || passed.stdout).toBe(false);
+      expect(passed.code).toBe(0);
+      const report = JSON.parse(passed.stdout) as ScenarioReport;
+      expect(report.ok).toBe(true);
+    } finally {
+      await good.stop();
+    }
+  }, 60_000);
+
+  it('exits nonzero when the LiveKit scenario fails', async () => {
+    const buggy = await startScriptedAgent({ mode: 'buggy', url: server.url, apiKey: server.apiKey, apiSecret: server.apiSecret });
+    try {
+      const failed = await runProcess(['run', 'examples/scenarios/order.yaml', '--label', 'Pickup order', '--json', '--ci'], 45_000);
+      expect(failed.timedOut, failed.stderr || failed.stdout).toBe(false);
+      expect(failed.code).toBe(1);
+      const report = JSON.parse(failed.stdout) as ScenarioReport;
+      expect(report.ok).toBe(false);
+    } finally {
+      await buggy.stop();
+    }
+  }, 60_000);
+
   it('names a missing agent when dispatch is explicit', async () => {
     const dir = join(process.cwd(), '.callsim', 'bin');
     const file = join(dir, 'dispatch.yaml');
@@ -98,6 +125,37 @@ describe.skipIf(skip)('livekit dev server', () => {
     expect(`${report.error?.code} ${report.error?.message}`).toMatch(/agent_not_joined|dispatch_failed/);
   }, 30_000);
 });
+
+function runProcess(args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [join(process.cwd(), 'dist', 'cli.js'), ...args], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+    child.once('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr, timedOut });
+    });
+  });
+}
 
 async function capture(argv: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = '';

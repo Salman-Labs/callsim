@@ -149,8 +149,10 @@ Options:
   --timeout <seconds>  Whole-scenario limit. Default 60.
   --help
 
-The scenario file's transport selects the platform. livekit is implemented.
-Twilio Media Streams stays on \`callsim <ws-url>\` until a later release.
+The scenario file's transport selects the platform. \`transport: livekit\`
+joins a room. \`transport: twilio\` connects to the bot's Media Streams
+WebSocket (\`twilio.url\`). The one-shot \`callsim <ws-url>\` command is that
+same Media Streams engine without a scenario file.
 
 LiveKit reads LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET from the
 environment and does not print them. Optional packages:
