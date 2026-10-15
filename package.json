@@ -67,7 +67,7 @@
     "@modelcontextprotocol/sdk": "^1.32.1",
     "ws": "^8.18.3",
     "yaml": "^2.9.1",
-    "zod": "^3.25.76"
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "@livekit/rtc-node": "^1.1.0",
