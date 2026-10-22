@@ -163,7 +163,8 @@ export function expectsSpeech(expect: Expectation | undefined): boolean {
 
 export function mergeExpectation(defaults: { max_first_audio_ms?: number; max_yield_ms?: number; max_agent_audio_after_barge_ms?: number } | undefined, expect: Expectation | undefined, hasCallerAudio: boolean): Expectation | undefined {
   const merged: Expectation = { ...(expect ?? {}) };
-  if (hasCallerAudio && merged.max_first_audio_ms === undefined && defaults?.max_first_audio_ms !== undefined) {
+  // Only turns that expect something get the default first-audio gate: a closing "goodbye" needs no reply.
+  if (hasCallerAudio && expect && merged.max_first_audio_ms === undefined && defaults?.max_first_audio_ms !== undefined) {
     merged.max_first_audio_ms = defaults.max_first_audio_ms;
   }
   if (merged.max_yield_ms === undefined && defaults?.max_yield_ms !== undefined) merged.max_yield_ms = defaults.max_yield_ms;

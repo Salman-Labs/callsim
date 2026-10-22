@@ -46,7 +46,8 @@ Add `--label`, `--tags key=value`, `--ci`, and `--junit out.xml` when a subset o
 - One complication per scenario. A barge-in case should not also be the only place that checks the transfer flow.
 - Prefer `agent_says_any` or `agent_says_regex` over a full expected sentence. Agent wording moves. On Twilio, those checks need `stt` or they are skipped.
 - Twilio barge-in: `require_clear: true` fails unless `clear` arrives. `max_gap_ms` is the longest playback underrun. Both show up under `report.twilio` with mark round-trips.
-- Put numeric gates in `defaults` (`max_first_audio_ms`, `silence_ms`) and override them on the turn that needs a tighter bound.
+- Put numeric gates in `defaults` (`max_first_audio_ms`, `silence_ms`) and override them on the turn that needs a tighter bound. The default `max_first_audio_ms` only gates caller turns that have an `expect`.
+- Put checks on the caller line's own turn; the runner waits for the whole reply (`defaults.reply_quiet_ms`, default 700 ms of agent quiet) and its transcript. A scenario longer than 60 s needs `timeout_ms` on the file or the scenario.
 - Use `audio:` WAV files, or commit `.callsim/tts/<sha256>.wav`, so a rerun does not need a TTS key.
 - When the pass condition is something the caller cannot hear (an order row, a ticket, a webhook), add `verify`. That is either `{ run, expect_exit }` or `{ http: { url, expect_status, expect_json } }`. `expect_json` is a map of dotted paths to expected values. Put secrets in `${VAR}` and keep them out of the file.
 - If a scenario mentions a date, write the absolute date. Do not say "next Tuesday".

@@ -15,9 +15,10 @@ export const LIVEKIT_SERVER_PIN = {
 const BIN_DIR = join(process.cwd(), '.callsim', 'bin');
 
 export async function ensureLiveKitServer(): Promise<string> {
+  if (process.env.LIVEKIT_SERVER_BIN) return process.env.LIVEKIT_SERVER_BIN;
   if (process.arch !== 'x64' || process.platform !== 'linux') {
     throw new Error(
-      `livekit-server ${LIVEKIT_SERVER_PIN.version} pin is the linux amd64 archive; this host is ${process.platform} ${process.arch}`,
+      `livekit-server ${LIVEKIT_SERVER_PIN.version} pin is the linux amd64 archive; this host is ${process.platform} ${process.arch}. Set LIVEKIT_SERVER_BIN to a local livekit-server binary.`,
     );
   }
   mkdirSync(BIN_DIR, { recursive: true });

@@ -1,12 +1,14 @@
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
 import { kindName, resolveCallerKind } from '../src/livekit/kind.js';
 import { missingLiveKitMessage } from '../src/livekit/load.js';
-import { evaluateExpectations } from '../src/scenario/expect.js';
+import { errorText } from '../src/scenario/errors.js';
+import { evaluateExpectations, mergeExpectation } from '../src/scenario/expect.js';
 import { junitXml } from '../src/scenario/junit.js';
 import { loadScenarioFile } from '../src/scenario/load.js';
 import { runScenarios, scenarioExitCode } from '../src/scenario/run.js';
@@ -224,6 +226,80 @@ describe('scenario runner', () => {
     expect(missingLiveKitMessage()).toContain('npm install @livekit/rtc-node livekit-server-sdk');
   });
 
+  it('scores a two-sentence reply whose transcript is final only after the audio', async () => {
+    const file = writeYaml(
+      'name: Pauses\ntransport: fake\nscenarios:\n  - label: Greets in two sentences\n    turns:\n      - expect:\n          agent_says_all: ["thanks for calling", "what can I get"]\n',
+    );
+    const manual = new ManualTransport();
+    const original = manual.waitForAgent.bind(manual);
+    manual.waitForAgent = async (timeoutMs: number) => {
+      const presence = await original(timeoutMs);
+      // LiveKit Agents: one stream per reply, text as it plays, final only when the stream closes.
+      const at = (ms: number, fn: () => void): void => void setTimeout(fn, ms);
+      at(10, () => manual.emitVad('start'));
+      at(12, () => manual.emitSaid('Thanks for calling.', { final: false, segmentId: 'SG_1' }));
+      at(300, () => manual.emitVad('stop'));
+      at(660, () => manual.emitVad('start'));
+      at(662, () => manual.emitSaid('Thanks for calling. What can I get you?', { final: false, segmentId: 'SG_1' }));
+      at(950, () => manual.emitVad('stop'));
+      at(1200, () => manual.emitSaid('Thanks for calling. What can I get you?', { final: true, segmentId: 'SG_1' }));
+      return presence;
+    };
+    const reports = await runScenarios({ files: [file], cwd: process.cwd(), outDir: join(scratch(), 'runs'), transportFactory: () => manual });
+    expect(reports[0]?.failures).toEqual([]);
+    expect(reports[0]?.turns[0]?.agent.said).toBe('Thanks for calling. What can I get you?');
+    expect(reports[0]?.transcript).toEqual([{ role: 'agent', text: 'Thanks for calling. What can I get you?', t: expect.any(Number) }]);
+  });
+
+  it('applies the default max_first_audio_ms only to turns that expect something', () => {
+    expect(mergeExpectation({ max_first_audio_ms: 500 }, undefined, true)).toBeUndefined();
+    expect(mergeExpectation({ max_first_audio_ms: 500 }, { agent_heard: ['hi'] }, true)?.max_first_audio_ms).toBe(500);
+  });
+
+  it('lets timeout_ms on the file or the scenario beat --timeout', async () => {
+    const file = writeYaml(
+      'name: Slow\ntransport: fake\ntimeout_ms: 150\nscenarios:\n  - label: File limit\n    turns:\n      - wait_ms: 2000\n  - label: Scenario limit\n    timeout_ms: 5000\n    turns:\n      - wait_ms: 400\n',
+    );
+    const reports = await runScenarios({
+      files: [file],
+      cwd: process.cwd(),
+      outDir: join(scratch(), 'runs'),
+      timeoutMs: 60_000,
+      transportFactory: () => quietTransport(),
+    });
+    expect(reports[0]?.error?.code).toBe('timeout');
+    expect(reports[1]?.ok).toBe(true);
+    expect(() => loadScenarioFile(writeYaml('transport: fake\ntimeout_ms: 0\nscenarios:\n  - label: x\n    turns:\n      - wait_ms: 1\n'))).toThrow(
+      /timeout_ms must be > 0/,
+    );
+  });
+
+  // livekit-server-sdk needs Node 19+ (globalThis.crypto); the LiveKit suites run on Node 22 in CI.
+  it.skipIf(Number(process.versions.node.split('.')[0]) < 19)('names the network cause when a LiveKit API call fails', async () => {
+    expect(
+      errorText(new TypeError('fetch failed', { cause: Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED' }) })),
+    ).toBe('fetch failed: certificate has expired (CERT_HAS_EXPIRED)');
+    const saved = { url: process.env.LIVEKIT_URL, key: process.env.LIVEKIT_API_KEY, secret: process.env.LIVEKIT_API_SECRET };
+    process.env.LIVEKIT_API_KEY = 'devkey';
+    process.env.LIVEKIT_API_SECRET = 'secret';
+    const closed = createServer();
+    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
+    const port = (closed.address() as AddressInfo).port;
+    await new Promise((resolve) => closed.close(resolve));
+    const file = writeYaml(
+      `name: Down\ntransport: livekit\nlivekit:\n  url: ws://127.0.0.1:${port}/livekit\n  agent_name: nobody\nscenarios:\n  - label: Server down\n    turns:\n      - wait_ms: 1\n`,
+    );
+    try {
+      const reports = await runScenarios({ files: [file], cwd: process.cwd(), outDir: join(scratch(), 'runs') });
+      expect(reports[0]?.error?.code).toBe('dispatch_failed');
+      expect(reports[0]?.error?.message).toContain(`at http://127.0.0.1:${port}/livekit: fetch failed: connect ECONNREFUSED`);
+    } finally {
+      restore('LIVEKIT_URL', saved.url);
+      restore('LIVEKIT_API_KEY', saved.key);
+      restore('LIVEKIT_API_SECRET', saved.secret);
+    }
+  });
+
   it('sets barge-in ok false when clear was not received', async () => {
     const dir = scratch();
     const hello = join(process.cwd(), 'fixtures', 'hello.wav');
@@ -319,7 +395,7 @@ class ManualTransport implements Transport {
   clearOnBarge: boolean | null = null;
   private origin = 0;
   private vadListeners = new Set<(event: { type: 'start' | 'stop'; atMs: number; speechMs?: number }) => void>();
-  private saidListeners = new Set<(event: { text: string; final: boolean; atMs: number }) => void>();
+  private saidListeners = new Set<(event: { text: string; final: boolean; atMs: number; segmentId?: string }) => void>();
   private heardListeners = new Set<(event: { text: string; final: boolean; atMs: number }) => void>();
   private audioListeners = new Set<(frame: { pcm: Int16Array; sampleRate: number; atMs: number }) => void>();
 
@@ -403,8 +479,9 @@ class ManualTransport implements Transport {
 
   async hangup(): Promise<void> {}
 
-  emitSaid(text: string): void {
-    for (const listener of this.saidListeners) listener({ text, final: true, atMs: this.now() });
+  emitSaid(text: string, options: { final?: boolean; segmentId?: string } = {}): void {
+    const event = { text, final: options.final ?? true, atMs: this.now(), ...(options.segmentId ? { segmentId: options.segmentId } : {}) };
+    for (const listener of this.saidListeners) listener(event);
   }
 
   emitVad(type: 'start' | 'stop'): void {

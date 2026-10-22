@@ -19,8 +19,9 @@ scenarios:
     userdata:
       restaurant_id: test-pizzeria
     turns:
+      # The greeting is two sentences with a pause between them; both must be scored.
       - expect:
-          agent_says_any: ["thanks for calling", "what can I get"]
+          agent_says_all: ["thanks for calling", "what can I get"]
       - audio: ../../fixtures/hello.wav
         expect:
           agent_heard: ["hello"]
@@ -30,8 +31,10 @@ scenarios:
         expect:
           max_yield_ms: 600
           max_agent_audio_after_barge_ms: 700
-          agent_says_any: ["margherita", "updated"]
+          agent_says_all: ["margherita", "anything else"]
           agent_heard: ["yes"]
       - dtmf: "1"
         expect:
-          agent_says_any: ["confirmed"]
+          agent_says_all: ["confirmed", "see you soon"]
+      # No expect: the agent does not answer a goodbye, and max_first_audio_ms does not apply.
+      - audio: ../../fixtures/goodbye.wav

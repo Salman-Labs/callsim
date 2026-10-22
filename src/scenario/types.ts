@@ -6,6 +6,8 @@ export interface ScenarioFile {
   voice?: VoiceConfig;
   stt?: SttConfig;
   defaults?: ScenarioDefaults;
+  /** Whole-scenario limit for every scenario in the file. Beats `--timeout`. */
+  timeout_ms?: number;
   scenarios: ScenarioCase[];
   /** Directory containing the file. Set by the loader. */
   dir: string;
@@ -50,12 +52,16 @@ export interface ScenarioDefaults {
   /** Longest Twilio playback underrun, in milliseconds. */
   max_gap_ms?: number;
   silence_ms?: number;
+  /** Agent quiet that ends a reply, in milliseconds. Default 700. */
+  reply_quiet_ms?: number;
 }
 
 export interface ScenarioCase {
   label: string;
   tags?: Record<string, string>;
   userdata?: unknown;
+  /** Whole-scenario limit. Beats the file's `timeout_ms` and `--timeout`. */
+  timeout_ms?: number;
   turns: ScenarioTurn[];
   judge?: string;
   verify?: ScenarioVerify;
@@ -135,7 +141,10 @@ export interface ReportDtmf {
 
 export interface ReportTranscriptLine {
   role: 'agent' | 'caller';
+  /** Caller: the `say` text, else what the agent heard, else the WAV file name. */
   text: string;
+  /** Caller lines: the agent's own transcript of this line, when the platform has one. */
+  heard?: string;
   t: number;
 }
 

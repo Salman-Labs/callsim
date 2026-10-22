@@ -193,8 +193,7 @@ export interface RtcRemoteParticipant {
   trackPublications: Map<string, { sid?: string; kind?: number; track?: unknown }>;
 }
 
-export interface RtcTextReader {
-  readAll(): Promise<string>;
+export interface RtcTextReader extends AsyncIterable<string> {
   close(): Promise<void>;
   info: { attributes?: Record<string, string> };
 }

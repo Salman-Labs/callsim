@@ -146,7 +146,7 @@ Options:
                        this flag is accepted so CI scripts can say so.
   --junit <out.xml>    Write a JUnit report.
   --judge-required     Fail the run when the optional judge is skipped or not ok.
-  --timeout <seconds>  Whole-scenario limit. Default 60.
+  --timeout <seconds>  Whole-scenario limit. Default 60. A timeout_ms on the file or scenario wins.
   --help
 
 The scenario file's transport selects the platform. \`transport: livekit\`

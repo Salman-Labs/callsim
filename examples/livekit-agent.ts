@@ -5,7 +5,13 @@
  * `buggy` keeps the utterance going and stays silent after the interruption.
  * Transcripts are published on `lk.transcription` (its own line, and what it
  * "heard") so a scenario can run without an STT key.
+ *
+ * Replies are shaped like LiveKit Agents (1.x): several sentences with a short
+ * pause between them, and the reply's text streamed into one text stream that
+ * is opened with `lk.transcription_final: "false"` and closed after the audio
+ * has played.
  */
+import { randomBytes } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import {
@@ -26,6 +32,8 @@ import { EnergyVad } from '../src/vad.js';
 
 const PUBLISH_RATE = 48_000;
 const FRAME_SAMPLES = 480;
+/** Pause between two sentences of one reply, as a TTS leaves it. */
+const SENTENCE_GAP_MS = 360;
 
 export interface ScriptedAgentOptions {
   mode: 'good' | 'buggy';
@@ -108,7 +116,9 @@ class AgentSession {
     this.room.on(RoomEvent.DtmfReceived, (_code, digit) => {
       if (this.mode !== 'good' || digit !== '1' || this.dtmfHandled) return;
       this.dtmfHandled = true;
-      this.enqueue(() => this.speak('Order confirmed', 400, 660));
+      this.enqueue(async () => {
+        await this.speak(['Order confirmed.', 'See you soon.'], 400, 660);
+      });
     });
     this.room.on(RoomEvent.ParticipantConnected, (participant) => {
       if (participant.identity.startsWith('callsim-caller')) this.enqueue(() => this.greet());
@@ -160,7 +170,7 @@ class AgentSession {
   private async greet(): Promise<void> {
     if (this.greeted || this.stopped) return;
     this.greeted = true;
-    await this.speak('Thanks for calling. What can I get you?', 500, 440);
+    await this.speak(['Thanks for calling.', 'What can I get you?'], 500, 440);
   }
 
   private async watchCaller(track: RemoteTrack): Promise<void> {
@@ -193,28 +203,41 @@ class AgentSession {
       if (this.mode === 'buggy') return;
       this.interrupted = false;
       await this.sendText('yes', this.callerTrackSid);
-      await this.speak('Updated to a margherita.', 500, 520);
+      await this.speak(['Updated to a margherita.', 'Anything else?'], 500, 520);
       return;
     }
     this.callerTurns += 1;
     if (this.callerTurns !== 1) return;
     await this.sendText('hello', this.callerTrackSid);
-    await this.setState('speaking');
-    await this.sendText('Sure. Anything else?', this.agentTrackSid);
-    const finished = await this.play(tone(2200, 880));
-    if (!finished && this.mode === 'good') {
-      await this.setState('listening');
-      return;
-    }
-    await this.setState('listening');
+    await this.speak(['Sure. Anything else?'], 2200, 880);
   }
 
-  private async speak(text: string, ms: number, hz: number): Promise<void> {
-    if (this.stopped) return;
+  /** Speak `sentences` as one reply. Resolves false when a barge-in cut it short. */
+  private async speak(sentences: string[], ms: number, hz: number): Promise<boolean> {
+    const local = this.room.localParticipant;
+    if (this.stopped || !local) return false;
     await this.setState('speaking');
-    await this.sendText(text, this.agentTrackSid);
-    await this.play(tone(ms, hz));
-    await this.setState('listening');
+    const writer = await local.streamText({
+      topic: 'lk.transcription',
+      attributes: {
+        'lk.transcription_final': 'false',
+        'lk.segment_id': `SG_${randomBytes(6).toString('hex')}`,
+        ...(this.agentTrackSid ? { 'lk.transcribed_track_id': this.agentTrackSid } : {}),
+      },
+    });
+    let finished = true;
+    try {
+      for (let i = 0; i < sentences.length && finished; i += 1) {
+        if (i > 0) finished = await this.play(new Int16Array(Math.round((PUBLISH_RATE * SENTENCE_GAP_MS) / 1000)));
+        if (!finished) break;
+        await writer.write(i === 0 ? sentences[i]! : ` ${sentences[i]!}`);
+        finished = await this.play(tone(ms, hz));
+      }
+    } finally {
+      await writer.close().catch(() => undefined);
+      await this.setState('listening');
+    }
+    return finished;
   }
 
   private async sendText(text: string, trackSid: string | undefined): Promise<void> {

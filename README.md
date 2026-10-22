@@ -111,7 +111,7 @@ Install the optional peers once:
 npm install @livekit/rtc-node livekit-server-sdk
 ```
 
-If they are missing, `callsim run` exits 2 and prints that install line. Keys come from the environment and are never printed: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`.
+If they are missing, `callsim run` exits 2 and prints that install line. `livekit-server-sdk` needs Node 19 or newer. Keys come from the environment and are never printed: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`.
 
 ```yaml
 name: Phone orders
@@ -124,6 +124,7 @@ livekit:
     attributes:
       sip.phoneNumber: "+15550142"
       sip.trunkPhoneNumber: "+15557770000"
+timeout_ms: 120000                  # whole-scenario limit; a scenario's own timeout_ms beats it, and both beat --timeout
 voice:
   tts: openai
   voice: alloy
@@ -160,7 +161,13 @@ scenarios:
 
 `say:` is spoken with OpenAI TTS (`OPENAI_API_KEY`, plain `fetch`) and cached at `.callsim/tts/<sha256>.wav`. A line that is not cached, and has no key, exits 2. `audio:` plays a WAV file instead, which is what CI should use. `phone_band: true` runs that audio through μ-law before it is published.
 
-The runner scores `agent_says_any`, `agent_says_all`, `agent_says_regex`, `agent_not_says`, `agent_heard` (the agent's own transcript of the caller), `agent_silent`, `max_first_audio_ms`, `max_yield_ms`, and `max_agent_audio_after_barge_ms`. `defaults` fills in the numeric gates and `silence_ms`. Turn end is `AudioSource.waitForPlayout()`, not the moment the last frame was queued. Barge-in yield is the time from the start of caller audio until the agent's audio stays under an energy VAD for 200 ms. Agent text comes from the `lk.transcription` text stream (what the agent said, and what it heard). `lk.agent.state` is read when the agent publishes it. DTMF uses `publishDtmf`. The room is deleted on hangup.
+The runner scores `agent_says_any`, `agent_says_all`, `agent_says_regex`, `agent_not_says`, `agent_heard` (the agent's own transcript of the caller), `agent_silent`, `max_first_audio_ms`, `max_yield_ms`, and `max_agent_audio_after_barge_ms`. `defaults` fills in the numeric gates and `silence_ms`. The default `max_first_audio_ms` applies only to caller turns that have an `expect` block, so a closing line the agent does not answer is not failed for silence. Turn end is `AudioSource.waitForPlayout()`, not the moment the last frame was queued. Barge-in yield is the time from the start of caller audio until the agent's audio stays under an energy VAD for 200 ms. Agent text comes from the `lk.transcription` text stream (what the agent said, and what it heard). `lk.agent.state` is read when the agent publishes it. DTMF uses `publishDtmf`. The room is deleted on hangup.
+
+A reply ends when the agent has been quiet for `defaults.reply_quiet_ms` (default 700), so the pause between two sentences does not cut it short; raise it for an agent that pauses longer mid-reply. The next caller line also waits for that quiet before its `silence_ms`. The agent gets 8 s to start a reply and 30 s to finish it. LiveKit Agents streams a reply's text as it plays and marks it final only by closing the stream, so after the reply ends the runner waits up to 3 s for that text before it scores word checks. A text segment counts toward the turn in which it started.
+
+`report.transcript` has one line per agent segment, and one per caller line. A caller line's `text` is the `say` text, or for `audio:` what the agent heard, or the file name when the agent published nothing. `heard` is the agent's own transcript of that line. A whole scenario is limited by `timeout_ms` on the scenario, then on the file, then `--timeout`, then 60 s.
+
+When a LiveKit API call fails, the error names the underlying cause (for example `fetch failed: certificate has expired (CERT_HAS_EXPIRED)`). A `LIVEKIT_URL` with a path, such as `wss://host/livekit` behind a path-routing proxy, is used for both the room and the server API (`https://host/livekit/twirp/...`).
 
 `judge` calls an OpenAI-compatible chat endpoint (`OPENAI_BASE_URL` or `OPENAI_API_KEY`) and does not fail the run unless you pass `--judge-required`. With neither variable set, the report says the judge was skipped. `verify` is a generic order or state check: a shell command (`{ run, expect_exit }`) or an HTTP request whose JSON is compared with a path-equals map. `${VAR}` is read from the environment; a missing name is an error that names the variable and not its value.
 
@@ -168,13 +175,13 @@ The runner scores `agent_says_any`, `agent_says_all`, `agent_says_regex`, `agent
 npx voice-callsim run scenarios/*.yaml --label "Two large pepperonis for pickup" --json --ci --junit callsim.xml
 ```
 
-`run` is `npx voice-callsim run`. From a checkout, `node dist/cli.js run` is the same command. The Twilio example further down pins `voice-callsim@0.2.1`, which is the one-shot Media Streams CLI.
+`run` is `npx voice-callsim run`. From a checkout, `node dist/cli.js run` is the same command. The Twilio example further down pins `voice-callsim@0.3.0`, which is the one-shot Media Streams CLI.
 
 `examples/scenarios/order.yaml` is the same shape, played from `fixtures/*.wav` so it needs no TTS key. `npm run example:livekit-good` is a scripted participant (kind agent) that handles barge-in. `npm run example:livekit-buggy` keeps talking and then goes silent. Against `livekit-server --dev` the good one passes and the buggy one fails the yield and silence checks.
 
 ### CI, self-hosted
 
-Download a pinned `livekit-server`, check its checksum, and start `--dev` (API key `devkey`, secret `secret`, port 7880). This repo's LiveKit job does that from `test/livekit-server.ts` (v1.13.9, sha256 `0b7fa208b662d09cfdeae8c06cf4c481aead0556086558b48250501e2e2d6e20` for the linux amd64 archive). A workflow for your own agent:
+Download a pinned `livekit-server`, check its checksum, and start `--dev` (API key `devkey`, secret `secret`, port 7880). This repo's LiveKit job does that from `test/livekit-server.ts` (v1.13.9, sha256 `0b7fa208b662d09cfdeae8c06cf4c481aead0556086558b48250501e2e2d6e20` for the linux amd64 archive). On another platform, run the tests with `LIVEKIT_SERVER_BIN` pointing at a local `livekit-server` (for example `brew install livekit`). A workflow for your own agent:
 
 ```yaml
 name: voice-agent
@@ -421,7 +428,7 @@ jobs:
         run: node dist/server.js &
       - name: Media stream regression
         run: >
-          npx --yes voice-callsim@0.2.1 ws://127.0.0.1:8080
+          npx --yes voice-callsim@0.3.0 ws://127.0.0.1:8080
           --say hello --barge-in 0.2 --ci
           --max-first-audio-ms 800
           --max-gap-ms 60
