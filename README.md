@@ -175,7 +175,7 @@ When a LiveKit API call fails, the error names the underlying cause (for example
 npx voice-callsim run scenarios/*.yaml --label "Two large pepperonis for pickup" --json --ci --junit callsim.xml
 ```
 
-`run` is `npx voice-callsim run`. From a checkout, `node dist/cli.js run` is the same command. The Twilio example further down pins `voice-callsim@0.2.1`, which is the one-shot Media Streams CLI.
+`run` is `npx voice-callsim run`. From a checkout, `node dist/cli.js run` is the same command. The Twilio example further down pins `voice-callsim@0.3.0`, which is the one-shot Media Streams CLI.
 
 `examples/scenarios/order.yaml` is the same shape, played from `fixtures/*.wav` so it needs no TTS key. `npm run example:livekit-good` is a scripted participant (kind agent) that handles barge-in. `npm run example:livekit-buggy` keeps talking and then goes silent. Against `livekit-server --dev` the good one passes and the buggy one fails the yield and silence checks.
 
@@ -428,7 +428,7 @@ jobs:
         run: node dist/server.js &
       - name: Media stream regression
         run: >
-          npx --yes voice-callsim@0.2.1 ws://127.0.0.1:8080
+          npx --yes voice-callsim@0.3.0 ws://127.0.0.1:8080
           --say hello --barge-in 0.2 --ci
           --max-first-audio-ms 800
           --max-gap-ms 60
