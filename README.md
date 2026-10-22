@@ -111,7 +111,7 @@ Install the optional peers once:
 npm install @livekit/rtc-node livekit-server-sdk
 ```
 
-If they are missing, `callsim run` exits 2 and prints that install line. Keys come from the environment and are never printed: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`.
+If they are missing, `callsim run` exits 2 and prints that install line. `livekit-server-sdk` needs Node 19 or newer. Keys come from the environment and are never printed: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`.
 
 ```yaml
 name: Phone orders

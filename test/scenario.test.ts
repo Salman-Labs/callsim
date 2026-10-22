@@ -274,7 +274,8 @@ describe('scenario runner', () => {
     );
   });
 
-  it('names the network cause when a LiveKit API call fails', async () => {
+  // livekit-server-sdk needs Node 19+ (globalThis.crypto); the LiveKit suites run on Node 22 in CI.
+  it.skipIf(Number(process.versions.node.split('.')[0]) < 19)('names the network cause when a LiveKit API call fails', async () => {
     expect(
       errorText(new TypeError('fetch failed', { cause: Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED' }) })),
     ).toBe('fetch failed: certificate has expired (CERT_HAS_EXPIRED)');
