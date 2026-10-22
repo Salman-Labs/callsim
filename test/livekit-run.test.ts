@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createServer, request } from 'node:http';
+import { connect, type AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dispose } from '@livekit/rtc-node';
@@ -46,6 +48,22 @@ describe.skipIf(skip)('livekit dev server', () => {
       expect(report.bargeIn[0]?.ok).toBe(true);
       expect(report.bargeIn[0]?.yieldMs).toBeLessThanOrEqual(600);
       expect(report.versions.rtcNode).toBe('1.1.0');
+      // Each reply is two sentences with a pause; the whole reply is scored, not the first sentence.
+      expect(report.turns[0]?.agent.said).toBe('Thanks for calling. What can I get you?');
+      expect(report.turns[2]?.agent.said).toBe('Updated to a margherita. Anything else?');
+      expect(report.turns[3]?.agent.said).toBe('Order confirmed. See you soon.');
+      // A closing line with no expect gets no default first-audio gate.
+      expect(report.turns[4]?.checks).toEqual([]);
+      const agentLines = report.transcript.filter((line) => line.role === 'agent').map((line) => line.text);
+      expect(agentLines).toEqual([
+        'Thanks for calling. What can I get you?',
+        'Sure. Anything else?',
+        'Updated to a margherita. Anything else?',
+        'Order confirmed. See you soon.',
+      ]);
+      const callerLines = report.transcript.filter((line) => line.role === 'caller');
+      expect(callerLines.map((line) => line.text)).toEqual(['hello', 'yes', 'goodbye.wav']);
+      expect(callerLines[0]?.heard).toBe('hello');
       const wav = readFileSync(join(process.cwd(), report.artifacts.wav!));
       expect(wav.subarray(0, 4).toString()).toBe('RIFF');
       const events = readFileSync(join(process.cwd(), report.artifacts.events!), 'utf8')
@@ -106,6 +124,41 @@ describe.skipIf(skip)('livekit dev server', () => {
     }
   }, 60_000);
 
+  it('dispatches and joins through a path-prefixed LIVEKIT_URL', async () => {
+    const proxy = await startPrefixProxy('/livekit', 7880);
+    const good = await startScriptedAgent({ mode: 'good', url: server.url, apiKey: server.apiKey, apiSecret: server.apiSecret });
+    const dir = join(process.cwd(), '.callsim', 'bin');
+    const file = join(dir, 'prefixed.yaml');
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      file,
+      `name: Prefixed
+transport: livekit
+livekit:
+  url: ${proxy.url}/livekit
+  agent_name: callsim-prefixed
+scenarios:
+  - label: Greets through a proxy
+    turns:
+      - expect:
+          agent_says_all: ["thanks for calling", "what can I get"]
+`,
+    );
+    try {
+      const result = await capture(['run', file, '--json']);
+      if (result.code !== 0) throw new Error(`prefixed run failed (${result.code})
+${result.stdout}
+${result.stderr}`);
+      expect(proxy.paths.some((path) => path.startsWith('/livekit/twirp/livekit.AgentDispatchService/CreateDispatch'))).toBe(true);
+      expect(proxy.paths.some((path) => path.startsWith('/livekit/rtc'))).toBe(true);
+      expect(proxy.paths.filter((path) => !path.startsWith('/livekit/'))).toEqual([]);
+    } finally {
+      await good.stop();
+      await proxy.close();
+    }
+  }, 60_000);
+
   it('names a missing agent when dispatch is explicit', async () => {
     const dir = join(process.cwd(), '.callsim', 'bin');
     const file = join(dir, 'dispatch.yaml');
@@ -125,6 +178,57 @@ describe.skipIf(skip)('livekit dev server', () => {
     expect(`${report.error?.code} ${report.error?.message}`).toMatch(/agent_not_joined|dispatch_failed/);
   }, 30_000);
 });
+
+/** Forwards `${prefix}/*` (HTTP and WebSocket) to a local port with the prefix removed, and 404s anything else. */
+async function startPrefixProxy(prefix: string, port: number): Promise<{ url: string; paths: string[]; close(): Promise<void> }> {
+  const paths: string[] = [];
+  const sockets = new Set<{ destroy(): void }>();
+  const strip = (url = ''): string | null => (url.startsWith(`${prefix}/`) ? url.slice(prefix.length) : null);
+  const server = createServer((req, res) => {
+    paths.push(req.url ?? '');
+    const path = strip(req.url);
+    if (!path) {
+      res.writeHead(404).end();
+      return;
+    }
+    const upstream = request({ host: '127.0.0.1', port, path, method: req.method, headers: req.headers }, (reply) => {
+      res.writeHead(reply.statusCode ?? 502, reply.headers);
+      reply.pipe(res);
+    });
+    upstream.on('error', () => res.destroy());
+    req.pipe(upstream);
+  });
+  server.on('upgrade', (req, socket, head) => {
+    paths.push(req.url ?? '');
+    const path = strip(req.url);
+    if (!path) {
+      socket.destroy();
+      return;
+    }
+    const upstream = connect(port, '127.0.0.1', () => {
+      let preamble = `${req.method} ${path} HTTP/${req.httpVersion}\r\n`;
+      for (let i = 0; i < req.rawHeaders.length; i += 2) preamble += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`;
+      upstream.write(`${preamble}\r\n`);
+      upstream.write(head);
+      sockets.add(socket).add(upstream);
+      socket.pipe(upstream).pipe(socket);
+    });
+    upstream.on('error', () => socket.destroy());
+    socket.on('error', () => upstream.destroy());
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port: listening } = server.address() as AddressInfo;
+  return {
+    url: `ws://127.0.0.1:${listening}`,
+    paths,
+    close: () =>
+      new Promise((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
 
 function runProcess(args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
   return new Promise((resolve, reject) => {

@@ -1,5 +1,5 @@
 import type { AgentAudioFrame, AgentPresence, AgentVadEvent, CallerAudio, CallerPlayout, TranscriptEvent, Transport, TransportConnectOptions, TransportSnapshot } from '../transport.js';
-import { ScenarioConnectionError, ScenarioUsageError, scrubSecrets } from '../scenario/errors.js';
+import { errorText, ScenarioConnectionError, ScenarioUsageError, scrubSecrets } from '../scenario/errors.js';
 import { resampleLinear } from '../wav.js';
 import { EnergyVad } from '../vad.js';
 import { kindName, resolveCallerKind } from './kind.js';
@@ -34,6 +34,7 @@ class LiveKitTransport implements Transport {
   private origin = 0;
   private roomName: string | undefined;
   private httpUrl = '';
+  private apiPrefix = '';
   private wsUrl = '';
   private apiKey = '';
   private apiSecret = '';
@@ -71,6 +72,7 @@ class LiveKitTransport implements Transport {
     if (!this.apiKey) throw new ScenarioUsageError('LIVEKIT_API_KEY is not set');
     if (!this.apiSecret) throw new ScenarioUsageError('LIVEKIT_API_SECRET is not set');
     this.httpUrl = httpHost(this.wsUrl);
+    this.apiPrefix = pathPrefix(this.wsUrl);
     this.roomName = roomName(options.label, options.runId);
     this.attributes = callerAttributes(config);
     this.requestedKind = callerKind(config);
@@ -95,7 +97,7 @@ class LiveKitTransport implements Transport {
         await this.closeRoom();
         connected = undefined;
         throw new ScenarioConnectionError(
-          `Could not connect to LiveKit at ${safeUrl(this.wsUrl)}: ${scrubSecrets(err instanceof Error ? err.message : String(err))}`,
+          `Could not connect to LiveKit at ${safeUrl(this.wsUrl)}: ${scrubSecrets(errorText(err))}`,
           'connect_failed',
         );
       }
@@ -225,12 +227,12 @@ class LiveKitTransport implements Transport {
     const modules = this.modules;
     if (!modules || !this.roomName) return;
     try {
-      const client = new modules.sdk.AgentDispatchClient(this.httpUrl, this.apiKey, this.apiSecret);
+      const client = withPathPrefix(new modules.sdk.AgentDispatchClient(this.httpUrl, this.apiKey, this.apiSecret), this.apiPrefix);
       await client.createDispatch(this.roomName, agentName, { metadata: JSON.stringify(userdata ?? {}) });
       this.emit({ t: this.now(), type: 'dispatch', agentName });
     } catch (err) {
       throw new ScenarioConnectionError(
-        `agent dispatch failed for ${agentName}: ${scrubSecrets(err instanceof Error ? err.message : String(err))}`,
+        `agent dispatch failed for ${agentName} at ${safeUrl(this.httpUrl + this.apiPrefix)}: ${scrubSecrets(errorText(err))}`,
         'dispatch_failed',
       );
     }
@@ -346,29 +348,38 @@ class LiveKitTransport implements Transport {
     }
   }
 
+  /**
+   * LiveKit Agents streams the agent's reply into one text stream, word by word
+   * as it plays, and opens it with `lk.transcription_final: "false"`. Closing
+   * the stream is what ends the segment; the attribute is never updated. So
+   * agent text is emitted as it arrives (not final), and once more as final
+   * when the stream closes. The caller's interim transcripts are one stream
+   * each, so for them the attribute is the answer.
+   */
   private async consumeTranscript(reader: RtcTextReader, sender: string): Promise<void> {
     this.readers.add(reader);
+    const attributes = reader.info.attributes ?? {};
+    const segmentId = attributes['lk.segment_id'];
+    const role = this.transcriptRole(attributes['lk.transcribed_track_id'], sender);
+    const listeners = role === 'caller' ? this.heardListeners : this.saidListeners;
+    const send = (text: string, final: boolean): void => {
+      const event: TranscriptEvent = { text, final, atMs: this.now(), ...(segmentId ? { segmentId } : {}) };
+      for (const listener of listeners) listener(event);
+    };
     let text = '';
     try {
-      text = await reader.readAll();
+      for await (const chunk of reader) {
+        text += chunk;
+        if (role === 'agent') send(text, false);
+      }
     } catch {
       return;
     } finally {
       this.readers.delete(reader);
       await reader.close().catch(() => undefined);
     }
-    const attributes = reader.info.attributes ?? {};
-    const segmentId = attributes['lk.segment_id'];
-    const event: TranscriptEvent = {
-      text,
-      final: attributes['lk.transcription_final'] !== 'false',
-      atMs: this.now(),
-      ...(segmentId ? { segmentId } : {}),
-    };
-    const role = this.transcriptRole(attributes['lk.transcribed_track_id'], sender);
-    const listeners = role === 'caller' ? this.heardListeners : this.saidListeners;
-    for (const listener of listeners) listener(event);
-    this.emit({ t: event.atMs, type: 'transcription', role, text });
+    send(text, role === 'agent' || attributes['lk.transcription_final'] !== 'false');
+    this.emit({ t: this.now(), type: 'transcription', role, text });
   }
 
   private transcriptRole(trackId: string | undefined, sender: string): 'agent' | 'caller' {
@@ -413,7 +424,7 @@ class LiveKitTransport implements Transport {
 
   private async clearServerRoom(modules: LiveKitModules | undefined, name: string | undefined): Promise<void> {
     if (!name || !modules || !this.httpUrl || !this.apiKey || !this.apiSecret) return;
-    const rooms = new modules.sdk.RoomServiceClient(this.httpUrl, this.apiKey, this.apiSecret);
+    const rooms = withPathPrefix(new modules.sdk.RoomServiceClient(this.httpUrl, this.apiKey, this.apiSecret), this.apiPrefix);
     let participants: RtcParticipantInfo[] = [];
     try {
       participants = await rooms.listParticipants(name);
@@ -530,11 +541,28 @@ function roomName(label: string, runId: string): string {
   return `callsim-${slug}-${suffix}`;
 }
 
-function httpHost(url: string): string {
+export function httpHost(url: string): string {
   const parsed = new URL(url);
   if (parsed.protocol === 'ws:') parsed.protocol = 'http:';
   else if (parsed.protocol === 'wss:') parsed.protocol = 'https:';
   return parsed.origin;
+}
+
+/** `wss://host/livekit/` -> `/livekit`, for a server behind a path-routing proxy. */
+export function pathPrefix(url: string): string {
+  return new URL(url).pathname.replace(/\/+$/, '');
+}
+
+/**
+ * livekit-server-sdk resolves `/twirp/...` against the host, which drops a path
+ * prefix, and its clients do not pass a `prefix` option through. Put the path
+ * in front of the client's RPC prefix so API calls go where the room does.
+ */
+export function withPathPrefix<T>(client: T, prefix: string): T {
+  // ponytail: writes TwirpRpc.prefix (livekit-server-sdk 2.19). If the SDK renames it, a prefixed URL falls back to the bare host.
+  const rpc = (client as { rpc?: { prefix?: unknown } }).rpc;
+  if (prefix && rpc && typeof rpc.prefix === 'string' && !rpc.prefix.startsWith(prefix)) rpc.prefix = `${prefix}${rpc.prefix}`;
+  return client;
 }
 
 function safeUrl(url: string): string {

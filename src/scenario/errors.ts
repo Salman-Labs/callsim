@@ -29,3 +29,28 @@ export function scrubSecrets(message: string): string {
   }
   return out;
 }
+
+/**
+ * `err.message` plus its `cause` chain. `fetch` reports every network failure as
+ * `fetch failed`; the reason (an expired certificate, a refused connection) is
+ * only on `cause`.
+ */
+export function errorText(err: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = err;
+  for (let depth = 0; current !== undefined && current !== null && depth < 5; depth += 1) {
+    if (!(current instanceof Error)) {
+      parts.push(String(current));
+      break;
+    }
+    let message = current.message;
+    if (!message && current instanceof AggregateError) {
+      message = current.errors.map((item: unknown) => (item instanceof Error ? item.message : String(item))).join('; ');
+    }
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && !message.includes(code)) message = message ? `${message} (${code})` : code;
+    if (message && !parts.includes(message)) parts.push(message);
+    current = current.cause;
+  }
+  return parts.join(': ');
+}

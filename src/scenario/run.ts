@@ -36,8 +36,14 @@ import type {
 } from './types.js';
 import { runVerify } from './verify.js';
 
-const REPLY_TIMEOUT_MS = 4_000;
-const GREETING_TIMEOUT_MS = 8_000;
+/** How long to wait for the agent to start a reply. */
+const REPLY_START_TIMEOUT_MS = 8_000;
+/** How long one reply may run before the turn stops waiting for it to end. */
+const REPLY_END_TIMEOUT_MS = 30_000;
+/** Agent quiet that ends a reply. Agents pause ~300-400 ms between sentences. */
+const DEFAULT_REPLY_QUIET_MS = 700;
+/** How long to wait, after a reply ends, for its transcript to be final. */
+const TRANSCRIPT_SETTLE_MS = 3_000;
 const YIELD_TIMEOUT_MS = 8_000;
 const SPEAKING_TIMEOUT_MS = 10_000;
 const STATE_GRACE_MS = 300;
@@ -88,7 +94,7 @@ async function runOne(file: ScenarioFile, scenario: ScenarioCase, options: RunSc
   let report = base;
   let transport: Transport | undefined;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), scenario.timeout_ms ?? file.timeout_ms ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   try {
     transport = (options.transportFactory ?? defaultTransport)(file.transport);
     const clips = new Map<number, PreparedClip>();
@@ -223,10 +229,7 @@ async function runConnected(args: ConnectedArgs): Promise<ScenarioReport> {
     if (turn.hangup) break;
   }
 
-  for (const event of speech.said) {
-    if (event.segmentId && !event.final) continue;
-    if (event.text.trim()) transcript.push({ role: 'agent', text: event.text.trim(), t: event.atMs });
-  }
+  for (const line of transcriptLines(speech.said)) transcript.push({ role: 'agent', ...line });
   transcript.sort((a, b) => a.t - b.t);
 
   const judge = scenario.judge ? await runJudge(scenario.judge, transcript) : undefined;
@@ -308,6 +311,8 @@ async function runTurn(ctx: TurnContext): Promise<{
   const callerAction = Boolean(turn.say || turn.audio || turn.dtmf);
   const expect = mergeExpectation(ctx.defaults, turn.expect, Boolean(turn.say || turn.audio));
   const silenceMs = turn.silence_ms ?? (ctx.index > 0 && turn.barge_in_after_ms === undefined ? (ctx.defaults?.silence_ms ?? 0) : 0);
+  const quietMs = ctx.defaults?.reply_quiet_ms ?? DEFAULT_REPLY_QUIET_MS;
+  const replyEnded = (from: number): boolean => speech.replyAfter(from, quietMs, transport.now())?.ended === true;
 
   if (turn.hangup) await transport.hangup();
 
@@ -319,10 +324,11 @@ async function runTurn(ctx: TurnContext): Promise<{
       if (elapsed < turn.barge_in_after_ms) await sleep(turn.barge_in_after_ms - elapsed, signal);
     }
   } else if (!callerAction && turn.wait_ms === undefined && expect && !expect.agent_silent) {
-    await waitUntil(() => speech.startedAfter(windowStart), GREETING_TIMEOUT_MS, signal);
-    await waitUntil(() => speech.endedAfter(windowStart), GREETING_TIMEOUT_MS, signal);
-  } else if (speech.speaking) {
-    await waitUntil(() => !speech.speaking, SPEAKING_TIMEOUT_MS, signal);
+    if (await waitUntil(() => speech.startedAfter(windowStart), REPLY_START_TIMEOUT_MS, signal)) {
+      await waitUntil(() => replyEnded(windowStart), REPLY_END_TIMEOUT_MS, signal);
+    }
+  } else if (!speech.quietFor(quietMs, transport.now())) {
+    await waitUntil(() => speech.quietFor(quietMs, transport.now()), REPLY_END_TIMEOUT_MS, signal);
     if (silenceMs > 0) await sleep(silenceMs, signal);
   } else if (silenceMs > 0) {
     await sleep(silenceMs, signal);
@@ -342,7 +348,6 @@ async function runTurn(ctx: TurnContext): Promise<{
       startedAt: playout.startedAtMs,
       endedAt: playout.endedAtMs,
     };
-    callerLine = { role: 'caller', text: ctx.clip.text, t: playout.startedAtMs };
     ctx.log({
       t: playout.endedAtMs,
       type: 'playout',
@@ -376,9 +381,20 @@ async function runTurn(ctx: TurnContext): Promise<{
   if (expect?.agent_silent) {
     await sleep(Math.max(silenceMs, 800), signal);
   } else if (callerAction && expect && expectsSpeech(expect)) {
-    const reply = await waitForReply(speech, transport, afterMs, deferEnd, windowStart, signal, ctx.nativeTranscript || Boolean(ctx.stt));
+    const reply = await waitForReply(speech, transport, afterMs, deferEnd, windowStart, quietMs, signal, ctx.nativeTranscript || Boolean(ctx.stt));
     firstAudioMs = reply.firstAudioMs;
     speechMs = reply.speechMs;
+  }
+  if (ctx.nativeTranscript && expect && !deferEnd) {
+    const words = wordChecks(expect);
+    // No agent audio in this turn means no agent text is coming.
+    if (!speech.startedAfter(windowStart)) words.said = false;
+    if (words.said || words.heard) {
+      await waitUntil(() => {
+        const now = transport.now();
+        return (!words.said || speech.settled('said', windowStart, now)) && (!words.heard || speech.settled('heard', windowStart, now));
+      }, TRANSCRIPT_SETTLE_MS, signal);
+    }
   }
 
   if (ctx.stt && !ctx.nativeTranscript) {
@@ -395,7 +411,11 @@ async function runTurn(ctx: TurnContext): Promise<{
 
   const said = speech.text('said', windowStart, transport.now());
   const heard = speech.text('heard', windowStart, transport.now());
-  const newAudio = callerAction ? speech.replyAfter(afterMs) !== null : speech.startedAfter(windowStart);
+  const newAudio = callerAction ? speech.replyAfter(afterMs, quietMs, transport.now()) !== null : speech.startedAfter(windowStart);
+  if (ctx.clip && caller) {
+    const text = turn.say !== undefined ? ctx.clip.text : heard || ctx.clip.text;
+    callerLine = { role: 'caller', text, ...(heard ? { heard } : {}), t: caller.startedAt ?? caller.endedAt };
+  }
   const evaluated = expect
     ? evaluateExpectations({
         turn: n,
@@ -475,19 +495,23 @@ async function waitForReply(
   afterMs: number,
   deferEnd: boolean,
   windowStart: number,
+  quietMs: number,
   signal: AbortSignal,
   waitForWords: boolean,
 ): Promise<{ firstAudioMs: number | null; speechMs: number | null }> {
-  const started = await waitUntil(() => speech.replyAfter(afterMs) !== null, REPLY_TIMEOUT_MS, signal);
+  const started = await waitUntil(() => speech.replyAfter(afterMs, quietMs, transport.now()) !== null, REPLY_START_TIMEOUT_MS, signal);
   if (!started) return { firstAudioMs: null, speechMs: null };
-  if (waitForWords) {
+  if (deferEnd && waitForWords) {
+    // The next turn barges in, so score what has arrived while the agent is still talking.
     await waitUntil(() => {
       const now = transport.now();
       return speech.text('said', windowStart, now).trim() !== '' || speech.text('heard', windowStart, now).trim() !== '';
     }, 800, signal);
   }
-  if (!deferEnd) await waitUntil(() => speech.replyAfter(afterMs)?.ended === true, REPLY_TIMEOUT_MS, signal);
-  const reply = speech.replyAfter(afterMs);
+  if (!deferEnd) {
+    await waitUntil(() => speech.replyAfter(afterMs, quietMs, transport.now())?.ended === true, REPLY_END_TIMEOUT_MS, signal);
+  }
+  const reply = speech.replyAfter(afterMs, quietMs, transport.now());
   return {
     firstAudioMs: reply ? Math.max(0, Math.round(reply.startMs - afterMs)) : null,
     speechMs: reply?.speechMs ?? null,
@@ -555,15 +579,33 @@ class SpeechLog {
     return this.starts.some((item) => item.atMs >= ms - 30) || (this.speaking && (this.speechStartedAtMs ?? -1) >= ms - 30);
   }
 
-  endedAfter(ms: number): boolean {
-    return this.stops.some((item) => item.startMs >= ms - 30);
+  /** True once the agent has made no sound for `quietMs`. */
+  quietFor(quietMs: number, now: number): boolean {
+    if (this.speaking) return false;
+    const last = this.stops[this.stops.length - 1];
+    return !last || now - last.atMs >= quietMs;
   }
 
-  replyAfter(ms: number): { startMs: number; speechMs: number | null; ended: boolean } | null {
+  /**
+   * The first reply that started at or after `ms`. A reply is every utterance
+   * from that start until the agent stays quiet for `quietMs`, so the pause
+   * between two sentences does not end it.
+   */
+  replyAfter(ms: number, quietMs: number, now: number): { startMs: number; speechMs: number | null; ended: boolean } | null {
     const start = this.starts.find((item) => item.atMs >= ms - 30);
     if (!start) return null;
-    const stop = this.stops.find((item) => item.startMs >= start.atMs - 5);
-    return { startMs: start.atMs, speechMs: stop?.speechMs ?? null, ended: Boolean(stop) };
+    const stops = this.stops.filter((item) => item.startMs >= start.atMs - 5);
+    const speechMs = stops.length > 0 ? stops.reduce((sum, item) => sum + item.speechMs, 0) : null;
+    return { startMs: start.atMs, speechMs, ended: stops.length > 0 && this.quietFor(quietMs, now) };
+  }
+
+  /** Some text has arrived since `from`, and no segment in it is still open. */
+  settled(which: 'said' | 'heard', from: number, to: number): boolean {
+    const events = (which === 'said' ? this.said : this.heard).filter((event) => event.atMs >= from - 30 && event.atMs <= to + 30);
+    if (!events.some((event) => event.text.trim())) return false;
+    const open = new Map<string, boolean>();
+    for (const event of events) if (event.segmentId) open.set(event.segmentId, open.get(event.segmentId) === false ? false : !event.final);
+    return ![...open.values()].some(Boolean);
   }
 
   loudMsBetween(from: number, to: number): number {
@@ -582,23 +624,49 @@ class SpeechLog {
   }
 }
 
-function joinTranscript(events: TranscriptEvent[], from: number, to: number): string {
-  const window = events.filter((event) => event.atMs >= from - 30 && event.atMs <= to + 30);
-  const bySegment = new Map<string, TranscriptEvent>();
-  const plain: TranscriptEvent[] = [];
-  for (const event of window) {
+/** What to score from `expect`: the agent's own words, what it heard, or both. */
+function wordChecks(expect: ScenarioTurn['expect']): { said: boolean; heard: boolean } {
+  return {
+    said: Boolean(expect?.agent_says_any || expect?.agent_says_all || expect?.agent_says_regex || expect?.agent_not_says),
+    heard: Boolean(expect?.agent_heard),
+  };
+}
+
+/** One line per segment (its final text, else the latest), timed by when the segment began. */
+function transcriptLines(events: TranscriptEvent[]): { text: string; t: number }[] {
+  const lines: { text: string; t: number; final: boolean }[] = [];
+  const bySegment = new Map<string, { text: string; t: number; final: boolean }>();
+  for (const event of events) {
+    const text = event.text.trim();
     if (!event.segmentId) {
-      plain.push(event);
+      if (text) lines.push({ text, t: event.atMs, final: event.final });
       continue;
     }
-    const prev = bySegment.get(event.segmentId);
-    if (!prev || event.final || (!prev.final && event.atMs >= prev.atMs)) bySegment.set(event.segmentId, event);
+    const line = bySegment.get(event.segmentId);
+    if (!line) {
+      const created = { text, t: event.atMs, final: event.final };
+      bySegment.set(event.segmentId, created);
+      lines.push(created);
+    } else if (!line.final) {
+      line.text = text;
+      line.final = event.final;
+    }
   }
-  const all = [...bySegment.values(), ...plain];
-  const finals = all.filter((event) => event.final);
-  const use = (finals.length > 0 ? finals : all).sort((a, b) => a.atMs - b.atMs);
-  return use
-    .map((event) => event.text.trim())
+  return lines.filter((line) => line.text).map(({ text, t }) => ({ text, t }));
+}
+
+/** Text for one turn. A segment belongs to the turn it started in, even when its final text lands later. */
+function joinTranscript(events: TranscriptEvent[], from: number, to: number): string {
+  const inWindow = (t: number): boolean => t >= from - 30 && t <= to + 30;
+  const plain = events.filter((event) => !event.segmentId && inWindow(event.atMs));
+  const finals = plain.filter((event) => event.final);
+  const lines = [
+    ...transcriptLines(events.filter((event) => event.segmentId)).filter((line) => inWindow(line.t)),
+    ...(finals.length > 0 ? finals : plain).map((event) => ({ text: event.text.trim(), t: event.atMs })),
+  ];
+  return lines
+    .sort((a, b) => a.t - b.t)
+    .map((line) => line.text)
     .filter(Boolean)
     .join(' ');
 }

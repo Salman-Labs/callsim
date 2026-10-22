@@ -57,6 +57,7 @@ export function loadScenarioDocument(data: Record<string, unknown>, path: string
     ...(data.voice !== undefined ? { voice: voiceConfig(data.voice, `${path} voice`) } : {}),
     ...(data.stt !== undefined ? { stt: sttConfig(data.stt, `${path} stt`) } : {}),
     ...(data.defaults !== undefined ? { defaults: defaultsConfig(data.defaults, `${path} defaults`) } : {}),
+    ...(data.timeout_ms !== undefined ? { timeout_ms: positive(data.timeout_ms, `${path} timeout_ms`) } : {}),
     scenarios: scenarios.map((item, index) => scenarioCase(item, `${path} scenarios[${index}]`)),
     dir: resolve(path, '..'),
     path,
@@ -146,6 +147,7 @@ function scenarioCase(value: unknown, where: string): ScenarioCase {
     label: requiredString(obj.label, `${where}.label`),
     ...(tags ? { tags } : {}),
     ...(obj.userdata !== undefined ? { userdata: obj.userdata } : {}),
+    ...(obj.timeout_ms !== undefined ? { timeout_ms: positive(obj.timeout_ms, `${where}.timeout_ms`) } : {}),
     turns: turns.map((turn, index) => scenarioTurn(turn, `${where}.turns[${index}]`)),
     ...(obj.judge !== undefined ? { judge: requiredString(obj.judge, `${where}.judge`) } : {}),
     ...(obj.verify !== undefined ? { verify: scenarioVerify(obj.verify, `${where}.verify`) } : {}),
@@ -285,6 +287,7 @@ function defaultsConfig(value: unknown, where: string): ScenarioDefaults {
       : {}),
     ...(obj.max_gap_ms !== undefined ? { max_gap_ms: nonNegative(obj.max_gap_ms, `${where}.max_gap_ms`) } : {}),
     ...(obj.silence_ms !== undefined ? { silence_ms: nonNegative(obj.silence_ms, `${where}.silence_ms`) } : {}),
+    ...(obj.reply_quiet_ms !== undefined ? { reply_quiet_ms: nonNegative(obj.reply_quiet_ms, `${where}.reply_quiet_ms`) } : {}),
   };
 }
 
@@ -323,6 +326,12 @@ function jsonMap(value: unknown, where: string): Record<string, unknown> {
 function nonNegative(value: unknown, where: string): number {
   const number = numberValue(value, where);
   if (number < 0) throw new ScenarioUsageError(`${where} must be >= 0`);
+  return number;
+}
+
+function positive(value: unknown, where: string): number {
+  const number = numberValue(value, where);
+  if (number <= 0) throw new ScenarioUsageError(`${where} must be > 0`);
   return number;
 }
 
